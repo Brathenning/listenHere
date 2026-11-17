@@ -1089,6 +1089,7 @@ export async function enterFixMode(entryFile) {
     marquee: null, // an in-progress marquee drag on the strip
     resizing: null, // an in-progress strip or lane resize drag
     lastBatch: null, // test surface: the last "move to nearest onset" run
+    lastEnterBatch: null, // test surface: the last Enter on a multi-selection
     /** Fixes whose span AHEAD still waits for Re-align (auto re-align off):
      *  {i} (score↔ref) or {refT} (audio). Session-scoped: exit refills them. */
     pending: [],
@@ -8637,6 +8638,74 @@ async function _snapSelectionToOnsets() {
 }
 
 /**
+ * Enter on a multi-selection (the user's ruling, 2026-11-11): if any selected
+ * tick is free, every free one is anchored where it stands; only when all are
+ * anchored does Enter unanchor them all — the shape of A's select-all toggle.
+ * Gap endpoints stay out (G owns them). Neither gesture moves data, so nothing
+ * is realigned; the whole batch is ONE history entry.
+ */
+async function _toggleAnchorSelection() {
+  const f = _fix;
+  if (!f) return;
+  if (f.realignBusy || _batch) {
+    _announce("Still realigning the last fix — one moment.");
+    return;
+  }
+  const ixs = [...f.multiSel]
+    .sort((a, b) => a - b)
+    .filter((ix) => f.groups[ix] && !_gapAtGroup(f.groups[ix]));
+  if (!ixs.length) {
+    _announce("The selection holds only gap endpoints: G lays and removes gaps.");
+    return;
+  }
+  const free = ixs.filter((ix) => !_groupAnchored(f.groups[ix]));
+  const op = free.length ? "approve" : "unanchor";
+  const todo = free.length ? free : ixs;
+  _batch = { entries: [], first: null, last: null, done: 0, total: todo.length };
+  try {
+    for (const ix of todo) {
+      if (op === "approve") {
+        await _commitAnchor(ix, _groupStripTime(f.groups[ix]), "approve");
+        if (_fix !== f) return;
+      } else {
+        _unanchorGroup(ix);
+      }
+      _batch.done++;
+    }
+  } finally {
+    const b = _batch;
+    _batch = null;
+    if (b?.entries.length === 1) pushFixUndoEntry(b.entries[0]);
+    else if (b?.entries.length > 1) {
+      pushFixUndoEntry({
+        type: "fix-anchor-batch",
+        op,
+        entries: b.entries,
+        count: b.entries.length,
+        i: b.entries[0].i,
+        barHint: b.entries[0].barHint,
+      });
+    }
+    f.lastEnterBatch = { op, requested: ixs.length, done: b?.entries.length || 0 };
+  }
+  const n = f.lastEnterBatch.done;
+  _announce(
+    op === "approve"
+      ? `Anchored ${n} onset${n === 1 ? "" : "s"} where ${n === 1 ? "it stands" : "they stand"}.`
+      : `Unanchored ${n} onset${n === 1 ? "" : "s"}: ${n === 1 ? "it keeps its time" : "they keep their times"}, and later fixes may move ${n === 1 ? "it" : "them"}.`,
+  );
+  _syncRealignUi();
+  _scheduleRedraw();
+}
+
+/** One entry of a fix-anchor-batch through history. */
+function _batchEntryHop(entry, undo) {
+  if (entry.type === "fix-unanchor") _unanchorHop(entry, undo);
+  else if (undo) _undoEntryData(entry);
+  else _redoEntryData(entry);
+}
+
+/**
  * Where a fix's replay opens: half a second before the previous anchor, but
  * never more than MAX_RUNUP_SEC before the fix itself. `window.t0` is the
  * previous anchor's time — or 0 when there is none — so without the ceiling a
@@ -8818,9 +8887,9 @@ export function applyFixCorrectionUndo(entry) {
     return;
   }
   if (entry.type === "fix-anchor-batch") {
-    // A "move to nearest onset" batch: its anchors come off in reverse, then
-    // one hop covering the whole span.
-    for (let k = entry.entries.length - 1; k >= 0; k--) _undoEntryData(entry.entries[k]);
+    // A "move to nearest onset" batch, or Enter on a multi-selection: its
+    // entries come off in reverse, then one hop covering the whole span.
+    for (let k = entry.entries.length - 1; k >= 0; k--) _batchEntryHop(entry.entries[k], true);
     _afterHistoryHop(entry.entries[0], "Undid", entry.entries.length, _batchWindow(entry));
     _syncRealignUi();
     return;
@@ -8877,7 +8946,7 @@ export function applyFixCorrectionRedo(entry) {
     return;
   }
   if (entry.type === "fix-anchor-batch") {
-    for (const e of entry.entries) _redoEntryData(e);
+    for (const e of entry.entries) _batchEntryHop(e, false);
     _afterHistoryHop(entry.entries[0], "Redid", entry.entries.length, _batchWindow(entry));
     _syncRealignUi();
     return;
@@ -9113,6 +9182,13 @@ function _onFixKeydown(e) {
       if (hadPendingNudge) {
         // Enter on a floating nudge means "commit it now", not "approve".
         _commitPendingNudge();
+        break;
+      }
+      // A drag-selection of several ticks: anchor or unanchor them all at once.
+      if (f.multiSel.size > 1) {
+        _toggleAnchorSelection().catch((err) =>
+          console.error("fix mode: batch anchor failed:", err),
+        );
         break;
       }
       // Enter anchors the selected tick where it stands; Enter again unanchors.
@@ -9688,6 +9764,7 @@ export function fixTestState() {
     stripHeightPx: _stripHeightPx,
     laneWeights: _laneWeights ? { ..._laneWeights } : null,
     lastBatch: f.lastBatch ? { ...f.lastBatch } : null,
+    lastEnterBatch: f.lastEnterBatch ? { ...f.lastEnterBatch } : null,
     timing: f.timing ? { ...f.timing } : null,
     lastDrag: f.lastDrag ? { ...f.lastDrag } : null,
     laneHeights: {

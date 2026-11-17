@@ -4541,7 +4541,9 @@ document.addEventListener("DOMContentLoaded", () => {
       case "fix-grid-anchor":
         return `alignment anchor (${entry.file})`;
       case "fix-anchor-batch":
-        return `alignment anchors (${entry.count})`;
+        return entry.op === "unanchor"
+          ? `remove alignment anchors (${entry.count})`
+          : `alignment anchors (${entry.count})`;
       case "fix-gap":
         return "unscored-audio gap";
       case "fix-ref-tick":

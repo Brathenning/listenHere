@@ -2787,6 +2787,107 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(Math.abs(now.get(gix - 1)! - prevT)).toBeLessThan(set.v - prevT);
   });
 
+  test('43.76 Enter on a multi-selection anchors every free tick where it stands; with all anchored it unanchors them all; each is ONE undo step and no time moves', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-auto-replay');
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    let st = await fixState(page);
+    const sel = st.selGroup;
+    const sum0 = await refChecksum(page);
+    const timeOf = (s: any, ix: number) => s.pageTicks.find((t: any) => t.ix === ix)!.t;
+    const t1 = timeOf(st, sel + 1);
+    // One tick of the three is anchored already.
+    await page.click('.fix-onset-next');
+    await page.keyboard.press('Enter');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(1);
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: alignment anchor');
+
+    // Any free tick in the selection: Enter anchors the free ones, in place.
+    await marqueeSelect(page, sel, sel + 2);
+    expect((await fixState(page)).multiSel).toEqual([sel, sel + 1, sel + 2]);
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lastEnterBatch);
+    st = await fixState(page);
+    expect(st.lastEnterBatch).toEqual({ op: 'approve', requested: 3, done: 2 });
+    expect(st.corrections.anchors).toHaveLength(3);
+    for (const ix of [sel, sel + 1, sel + 2]) {
+      const t = timeOf(st, ix);
+      expect(st.corrections.anchors.some((a: any) => Math.abs(a.t - t) < 1e-9)).toBe(true);
+    }
+    expect(timeOf(st, sel + 1)).toBeCloseTo(t1, 9);
+    expect(await refChecksum(page)).toEqual(sum0);
+    expect(st.multiSel).toEqual([sel, sel + 1, sel + 2]); // the selection stays for a second Enter
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: alignment anchors (2)');
+    await page.click('#undo-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 1,
+    );
+    await page.click('#redo-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 3,
+    );
+
+    // All anchored: Enter unanchors them all, as one step; the times stay.
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.lastEnterBatch?.op === 'unanchor',
+    );
+    st = await fixState(page);
+    expect(st.lastEnterBatch).toEqual({ op: 'unanchor', requested: 3, done: 3 });
+    expect(st.corrections.anchors).toHaveLength(0);
+    expect(await refChecksum(page)).toEqual(sum0);
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: remove alignment anchors (3)');
+    await page.click('#undo-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 3,
+    );
+    await page.click('#redo-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 0,
+    );
+    expect(await refChecksum(page)).toEqual(sum0);
+  });
+
+  test('43.77 audio mode: Enter on a multi-selection anchors the free ticks on the target grid in place and unanchors them all again, each as one undo step', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.click('#fix-auto-replay');
+    for (let k = 0; k < 6; k++) await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const sel = (await fixState(page)).selGroup;
+    const times0 = await tickTimes(page);
+    await marqueeSelect(page, sel, sel + 2);
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lastEnterBatch);
+    let st = await fixState(page);
+    expect(st.lastEnterBatch).toEqual({ op: 'approve', requested: 3, done: 3 });
+    expect(st.gridAnchors).toHaveLength(3);
+    expect(await tickTimes(page)).toEqual(times0);
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: alignment anchors (3)');
+    await page.click('#undo-btn');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gridAnchors.length === 0);
+    await page.click('#redo-btn');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gridAnchors.length === 3);
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.lastEnterBatch?.op === 'unanchor',
+    );
+    st = await fixState(page);
+    expect(st.gridAnchors).toHaveLength(0);
+    expect(await tickTimes(page)).toEqual(times0);
+    await page.click('#undo-btn');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gridAnchors.length === 3);
+  });
+
   test('43.50 audio mode with Bend off: a BACKWARD drag pushes the projected ticks behind it by the same rule, the grid behind the first tick left in place is untouched, only the span ahead goes to the worker, and undo restores the grid bit-exactly', async ({
     page,
   }) => {

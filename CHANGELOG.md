@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.129.0 -- Correction: Enter on a multi-selection
+
+* Enter on several selected ticks (marquee, Shift+click, or A) anchors every free one where it stands; when all are anchored, Enter unanchors them all. Either is one undo step and moves no time; gap endpoints stay with G.
+* Testing: 43.76 and 43.77 new (score and audio-to-audio); specs 42 and 43 pass (115, Chromium).
+
 ### 0.127.0 -- Correction: dragging up to an anchored tick
 
 * A tick dragged back towards an anchored tick now stops 10 ms past it, no longer 40 ms: the 30 ms push buffer is kept only against ticks that can be pushed. A grace note's main note can now sit at its real distance (m. 79 of the Fledermaus: 10.6 ms, was 40 ms).
