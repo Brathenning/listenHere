@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.127.0 -- Correction: dragging up to an anchored tick
+
+* A tick dragged back towards an anchored tick now stops 10 ms past it, no longer 40 ms: the 30 ms push buffer is kept only against ticks that can be pushed. A grace note's main note can now sit at its real distance (m. 79 of the Fledermaus: 10.6 ms, was 40 ms).
+* Audio-to-audio, behind an anchored tick a drag also stops 1 ms past the first raster sample the anchor holds, so a drop the drag allows is never refused afterwards.
+* Behind a free tick, a drop before that raster sample is accepted and the span refills from the tick, which shifts with it, instead of "Cannot anchor here: not before the previous onset" and a jump back.
+* A released tick stays where it was dropped while the re-align runs; it was drawn at its old place for about 110 ms first.
+* Testing: 43.74 and 43.75 new, 43.51 follows the new floor; specs 42 and 43 pass (113, Chromium); the m. 79 probe on the real recordings (working-docs `tools/live-m79-grace.js`) shows the 10.6 ms floor and no flash.
+
 ### 0.126.0 -- Onset-detector trial in correction mode
 
 * Opt-in `?onsetHop=256` (or 128) and `?onsetSmooth=1` (any odd width up to 9) set the onset curve's hop and moving-average width for the lanes, the snap targets, and a score-less session's ticks. Without them nothing changes (hop 512, width 5). Measured: piano onsets +25 ms late against about +1 ms; Vienna 4x22 first onsets +37–40 ms against +4 ms; Fledermaus VPO-2022, 73 % of the score's onsets found within 100 ms against 28 %, at 85 % precision against 97 %.

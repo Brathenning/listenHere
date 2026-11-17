@@ -184,6 +184,8 @@ const NUDGE_FINE_SEC = 0.02;
 const _heldArrows = new Set();
 /** Anchor times clamp this far inside the neighbouring anchors' times. */
 const ANCHOR_EPS_SEC = 0.01;
+/** ...and this far past a raster sample an anchored previous tick holds. */
+const KEPT_SAMPLE_EPS_SEC = 0.001;
 
 // The v2 lanes (plan §14 Layout Q2): the strip is a LANE STACK under the
 // waveform's one time→x mapping. The worker computes both lanes from the
@@ -5156,6 +5158,10 @@ function _redrawOverlays() {
   const pushed = new Map();
   if (dr && dr.curT < dr.startT) {
     for (const m of _pushPlan(dr.groupIx, dr.curT).moves) pushed.set(f.groups[m.ix], m.to);
+  } else if (!dr && f.landing) {
+    // A released drag still committing stays where it was dropped (_commitDrop).
+    for (const [g, t] of f.landing.pushed) pushed.set(g, t);
+    pushed.set(f.landing.group, f.landing.t);
   }
   f.dragPushed = dr ? [...pushed.values()] : null; // test surface
   // The earlier pages' ticks inside the window, as ghosts: dashed, faint, not
@@ -5515,6 +5521,10 @@ function _dragBounds(groupIx) {
     if (!_autoRealign && hasNext) hi = Math.min(hi, _nextLocalGridSpan(groupIx, refT, null).tCeil);
     lo += ANCHOR_EPS_SEC;
     hi -= ANCHOR_EPS_SEC;
+    // Behind an anchored tick the first raster sample past it is held (see
+    // _leftGridSpan): the commit refuses a drop before it, so the drag does too.
+    const kept = _leftGridSpan(groupIx, refT, NaN).kept;
+    if (kept !== null) lo = Math.max(lo, kept + KEPT_SAMPLE_EPS_SEC);
     return { lo, hi: Math.max(lo, hi) };
   }
   const i = _anchorEventOf(f.groups[groupIx]);
@@ -5649,9 +5659,30 @@ function _onTickMouseUp(e) {
   }
   f.lastDrag = { rawT: d.rawT ?? d.curT, t: d.curT, snapped: d.snapT != null };
   _select(d.groupIx, { seek: false });
-  _commitAnchor(d.groupIx, d.curT, "drag").catch((err) => {
-    console.error("fix mode: drag commit failed:", err);
-  });
+  _commitDrop(f, d, "drag");
+}
+
+/**
+ * Commit a released drag (or keyboard nudge), holding the tick — and the
+ * ticks its push moved — where it was dropped until the commit settles.
+ * Without the hold the tick was drawn at its OLD time while the realign ran,
+ * ~110 ms measured: a flash back before it settled (Werner, 2026-11-11). A
+ * refused commit settles at once, and the tick returns.
+ */
+function _commitDrop(f, d, what) {
+  const pushed = new Map();
+  if (d.curT < d.startT) {
+    for (const m of _pushPlan(d.groupIx, d.curT).moves) pushed.set(f.groups[m.ix], m.to);
+  }
+  const hold = { group: f.groups[d.groupIx], t: d.curT, pushed };
+  f.landing = hold;
+  _commitAnchor(d.groupIx, d.curT, "drag")
+    .catch((err) => console.error(`fix mode: ${what} commit failed:`, err))
+    .finally(() => {
+      if (f.landing !== hold) return;
+      f.landing = null;
+      if (_fix === f) _scheduleRedraw();
+    });
 }
 
 /** Why the marker would not move — the answer a refused gesture gives. */
@@ -5808,9 +5839,7 @@ function _commitPendingNudge() {
     _scheduleRedraw();
     return;
   }
-  _commitAnchor(d.groupIx, d.curT, "drag").catch((err) => {
-    console.error("fix mode: nudge commit failed:", err);
-  });
+  _commitDrop(f, d, "nudge");
 }
 
 /** Escape during a pending nudge drops it (the tick springs back). */
@@ -6843,7 +6872,10 @@ function _pushPlan(gix, t) {
 /**
  * The lowest strip time group gix may be dragged to: every tick behind it
  * pushed to its buffer against the next, up against the nearest anchored one
- * (or an audio-mode wall), else against `floor` (the file's start).
+ * (or an audio-mode wall), else against `floor` (the file's start). An anchor
+ * is never pushed, so no buffer is kept against it — only the ANCHOR_EPS the
+ * bounds add: a grace note's anchor sat 40 ms (buffer + eps) ahead of its main
+ * note, longer than the interval itself (Werner, m. 79, 2026-11-11).
  */
 function _pushFloor(gix, floor) {
   const f = _fix;
@@ -6852,9 +6884,9 @@ function _pushFloor(gix, floor) {
   let nextOld = _groupStripTime(f.groups[gix]);
   for (let j = gix - 1; j >= 0; j--) {
     const old = _groupStripTime(f.groups[j]);
-    if (!(old > wall)) return wall + acc + Math.min(PUSH_BUFFER_SEC, Math.max(0, nextOld - wall));
-    acc += Math.min(PUSH_BUFFER_SEC, Math.max(0, nextOld - old));
+    if (!(old > wall)) return wall + acc;
     if (_groupAnchored(f.groups[j])) return old + acc;
+    acc += Math.min(PUSH_BUFFER_SEC, Math.max(0, nextOld - old));
     nextOld = old;
   }
   return Math.max(floor, wall) + acc;
@@ -6978,6 +7010,14 @@ function _nextLocalSpan(groupIx, i, t) {
  * fill's left knot, so the previous tick's projection (interpolated from the
  * samples around it) cannot move. `tFloor` is the lowest target time the fix
  * may take: past the previous tick and past that kept sample.
+ *
+ * Only an ANCHORED previous tick needs that sample kept (moving it would undo
+ * the anchor; _dragBounds stops a drag there, so the commit never refuses
+ * what the drag allowed). A free one may move: a fix dropped before the kept
+ * sample refills from the previous tick itself, and that tick shifts a little
+ * with the sample it is interpolated from, as a pushed tick would — refusing
+ * the drop ("not before the previous onset") snapped the tick back to where
+ * the drag began (Werner, m. 79).
  */
 function _leftGridSpan(groupIx, refT, t) {
   const f = _fix;
@@ -6989,7 +7029,22 @@ function _leftGridSpan(groupIx, refT, t) {
   if (prev && prev.refT > refPrev) refPrev = prev.refT;
   const k0 = rasterAfter(refGrid, refPrev);
   const kHi = rasterBefore(refGrid, refT);
-  let tFloor = prev && prev.refT >= refPrev - REF_T_EPS ? prev.t : _refToTarget(refPrev);
+  const prevAnchored = !!prev && prev.refT >= refPrev - REF_T_EPS;
+  const base = prevAnchored ? prev.t : _refToTarget(refPrev);
+  if (k0 <= kHi && !prevAnchored && t > base && t <= grid[k0]) {
+    return {
+      refA: refPrev,
+      tA: base,
+      refB: refT,
+      tB: t,
+      kLo: k0,
+      kHi,
+      interiorCount: kHi - k0 + 1,
+      local: true,
+      tFloor: base,
+    };
+  }
+  let tFloor = base;
   if (k0 <= kHi) tFloor = Math.max(tFloor, grid[k0]);
   const kLo = k0 + 1;
   return {
@@ -7002,6 +7057,8 @@ function _leftGridSpan(groupIx, refT, t) {
     interiorCount: Math.max(0, kHi - kLo + 1),
     local: true,
     tFloor,
+    // The sample an anchored previous tick holds in place: the drag's floor.
+    kept: prevAnchored && k0 <= kHi ? grid[k0] : null,
   };
 }
 
@@ -9528,6 +9585,7 @@ export function fixTestState() {
     realignBusy: f.realignBusy,
     stripBusy: !!f.els.strip?.classList.contains("fix-realigning"),
     lanesPending: !!f.lanesPending,
+    landing: f.landing ? { ix: f.groups.indexOf(f.landing.group), t: f.landing.t } : null,
     pendingNudge: f.drag?.keyboard
       ? { startT: f.drag.startT, curT: f.drag.curT }
       : null,
@@ -9680,6 +9738,11 @@ export function fixTestState() {
  * audition deterministically and probe the stereo buffer's actual content.
  */
 export const fixTestControl = {
+  /** Re-project the ticks after a test edited the target grid in place. */
+  reproject() {
+    if (_fix) _recomputeProjection(_fix);
+    _scheduleRedraw();
+  },
   seek(t) {
     if (_fix) _fix.followFloor = null;
     _audSeek(t);

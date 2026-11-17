@@ -73,6 +73,9 @@ async function installWorkerStub(
     /** Score-less sessions: answer fix_ref_onsets with these reference onsets
      *  (perceived attacks = peaks + patShift, default −0.03). */
     refOnsets?: { peaks: number[]; patShift?: number };
+    /** Answer fix_target_realign after this many ms (default 5), so the
+     *  in-flight commit can be observed. */
+    targetRealignDelayMs?: number;
   } = {},
 ) {
   await page.evaluate((o) => {
@@ -201,7 +204,7 @@ async function installWorkerStub(
             w.onmessage?.({
               data: { type: 'fix_target_segment', result: { times, hop: 512 } },
             });
-          }, 5);
+          }, o.targetRealignDelayMs ?? 5);
         }
         if (msg.type === 'fix_lanes') {
           rec.which = msg.which;
@@ -2640,7 +2643,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(t2.off).toEqual(t0.off);
   });
 
-  test('43.51 with Bend off, an anchored tick is never pushed: a backward drag stops short of it by the buffers of the ticks between, and the anchor keeps its time', async ({
+  test('43.51 with Bend off, an anchored tick is never pushed: a backward drag stops short of it by the buffers of the free ticks between (none against the anchor itself), and the anchor keeps its time', async ({
     page,
   }) => {
     await gotoFixMode(page);
@@ -2657,9 +2660,11 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     const anchorT = old.get(anchorIx)!;
     const h = await pressSelectedTick(page);
     const gix = h.st.selGroup;
-    // The floor: the anchor plus one buffer per gap between it and the fix.
+    // The floor: the anchor plus one buffer per gap between the free ticks and
+    // the fix — none between the anchor and the first of them (0.127.0: it is
+    // never pushed, so ANCHOR_EPS alone keeps the order).
     let floor = anchorT;
-    for (let j = anchorIx; j < gix; j++) {
+    for (let j = anchorIx + 1; j < gix; j++) {
       floor += Math.min(0.03, old.get(j + 1)! - old.get(j)!);
     }
     await page.mouse.move(h.xAt(anchorT - 1), h.y, { steps: 5 });
@@ -2675,6 +2680,111 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     for (let j = anchorIx + 1; j < gix; j++) {
       expect(now.get(j)! - now.get(j - 1)!, `gap ${j}`).toBeGreaterThan(0);
     }
+  });
+
+  test('43.74 audio mode: a tick dragged back onto the anchored tick behind stops ANCHOR_EPS past it (or 1 ms past the raster sample the anchor holds) with no push buffer, and is drawn where it was dropped while the realign runs', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page, { targetRealignDelayMs: 400 });
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.selectOption('#fix-bend', '0');
+    await page.click('#fix-auto-replay');
+    for (let k = 0; k < 12; k++) await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await page.keyboard.press('Enter'); // approve: an anchor at its own time
+    const a = await fixState(page);
+    const anchorIx = a.selGroup;
+    const anchorT = a.selT;
+    await page.keyboard.press('ArrowRight');
+    const h = await pressSelectedTick(page);
+    const gix = h.st.selGroup;
+    expect(gix).toBe(anchorIx + 1);
+    const kept = await page.evaluate(
+      ({ T, refA, refB }) => {
+        const lt = (window as any)._listenTest;
+        const rg = lt.session.alignmentGrids[lt.fix.refFile];
+        const tg = lt.session.alignmentGrids[T];
+        const k0 = rg.findIndex((r: number) => r > refA + 1e-6);
+        return k0 >= 0 && rg[k0] < refB - 1e-6 ? tg[k0] : null;
+      },
+      { T: TARGET_ROW, refA: a.selRefT, refB: h.st.selRefT },
+    );
+    const floor = Math.max(anchorT + 0.01, kept === null ? -Infinity : kept + 0.001);
+    await page.mouse.move(h.xAt(anchorT - 1), h.y, { steps: 5 });
+    await page.mouse.up();
+    await page.keyboard.up('Alt');
+    // In flight: held at the drop, not drawn at its old time (the flash back).
+    const mid = await fixState(page);
+    expect(mid.realignBusy).toBe(true);
+    expect(mid.landing).toEqual({ ix: gix, t: expect.any(Number) });
+    expect(mid.landing.t).toBeCloseTo(floor, 9);
+    await page.waitForFunction(() => {
+      const f = (window as any)._listenTest.fix;
+      return !f.realignBusy && f.chipState !== 'realign';
+    });
+    const st = await fixState(page);
+    expect(st.landing).toBeNull();
+    expect(st.lastAnnounce ?? '').not.toMatch(/Cannot anchor/);
+    const now = await tickTimes(page);
+    expect(now.get(anchorIx)).toBeCloseTo(anchorT, 9);
+    expect(now.get(gix)).toBeCloseTo(floor, 6);
+  });
+
+  test('43.75 audio mode: a backward drop before the first raster sample past a FREE tick behind is accepted — the span refills from that tick — instead of refused as "not before the previous onset"', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.selectOption('#fix-bend', '0');
+    await page.click('#fix-auto-replay');
+    for (let k = 0; k < 12; k++) await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    // The state an earlier edit can leave (Werner, m. 79): the raster samples
+    // between the tick behind and the selected one raised to just short of
+    // the selected one, so the first of them sits well past the tick behind.
+    const set = await page.evaluate((T) => {
+      const lt = (window as any)._listenTest;
+      const f = lt.fix;
+      const ticks = new Map(f.pageTicks.map((p: any) => [p.ix, p]));
+      const g: any = ticks.get(f.selGroup);
+      const p: any = ticks.get(f.selGroup - 1);
+      const rg = lt.session.alignmentGrids[f.refFile];
+      const tg = lt.session.alignmentGrids[T];
+      const k0 = rg.findIndex((r: number) => r > p.refT + 1e-6);
+      const kHi = rg.findIndex((r: number) => r >= g.refT - 1e-6) - 1;
+      const v = g.t - 0.005;
+      for (let k = k0; k <= kHi; k++) tg[k] = Math.max(tg[k], v);
+      lt.fixCtl.reproject();
+      return { k0, kHi, v };
+    }, TARGET_ROW);
+    expect(set.k0).toBeLessThanOrEqual(set.kHi);
+    const old = await tickTimes(page);
+    const h = await pressSelectedTick(page);
+    const gix = h.st.selGroup;
+    const prevT = old.get(gix - 1)!;
+    expect(set.v - prevT).toBeGreaterThan(0.05); // room past the push buffer
+    const drop = prevT + 0.03 + (set.v - prevT - 0.03) / 2; // no push, before the kept sample
+    // Out past the drag threshold first: the drop itself is only a few px away.
+    await page.mouse.move(h.xAt(h.st.selT) + 20, h.y, { steps: 3 });
+    await page.mouse.move(h.xAt(drop), h.y, { steps: 5 });
+    await releaseTick(page);
+    const st = await fixState(page);
+    expect(st.lastAnnounce ?? '').not.toMatch(/Cannot anchor/);
+    // Where the pointer let go (pixel-quantised), unclamped, inside the window
+    // the old floor refused: past the push buffer, before the raised sample.
+    expect(st.lastDrag.t).toBe(st.lastDrag.rawT);
+    expect(st.lastDrag.t).toBeGreaterThan(prevT + 0.03);
+    expect(st.lastDrag.t).toBeLessThan(set.v);
+    const now = await tickTimes(page);
+    expect(now.get(gix)).toBeCloseTo(st.lastDrag.t, 6);
+    expect(st.gridAnchors.some((x: any) => Math.abs(x.t - st.lastDrag.t) < 1e-9)).toBe(true);
+    // The free tick behind shifts a little with its sample, and stays behind.
+    expect(now.get(gix - 1)!).toBeLessThan(now.get(gix)!);
+    expect(Math.abs(now.get(gix - 1)! - prevT)).toBeLessThan(set.v - prevT);
   });
 
   test('43.50 audio mode with Bend off: a BACKWARD drag pushes the projected ticks behind it by the same rule, the grid behind the first tick left in place is untouched, only the span ahead goes to the worker, and undo restores the grid bit-exactly', async ({
