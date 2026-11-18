@@ -8270,6 +8270,10 @@ body.fix-mode-open #transport .fix-only {
   margin-right: 0.45em;
   cursor: pointer;
 }
+/* Synth / Clicks: the same radios, flush left over the slider they set. */
+.fix-ear-row {
+  margin-left: 0;
+}
 /* The "move to nearest onset" icon at the end of the Snap row. */
 .fix-icon-btn {
   margin-left: auto;

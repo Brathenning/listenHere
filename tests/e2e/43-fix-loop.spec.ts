@@ -1228,6 +1228,87 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(rms.before).toBeLessThan(rms.early / 4);
   });
 
+  test('43.80 Clicks: the second channel becomes a click on every tick, in the AudioBuffer and the worklet\'s own copy; both ears hear the recording and the clicks, the slider mixes them; the clicks follow a drag; Synth puts the synth back', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await expect(page.locator('#fix-ear-synth')).toBeChecked();
+    const synthRms = await page.evaluate(() => (window as any)._listenTest.fixCtl.channelRms(1, 3, 10));
+    await page.click('#fix-ear-clicks');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.aud?.clickCount > 0);
+    let st = await fixState(page);
+    expect(st.aud.earMode).toBe('clicks');
+    expect(st.aud.clickCount).toBe(st.groupCount);
+    expect(st.aud.clickGain).toBeGreaterThan(0);
+    // Both ears: the recording and the clicks, at full level with the slider centred.
+    expect(st.aud.gains).toEqual({ L: 1, R: 1, xL: 1, xR: 1 });
+    // A click sounds from each tick on, in both copies of the channel.
+    const at = async (t: number) =>
+      page.evaluate(async (t) => {
+        const c = (window as any)._listenTest.fixCtl;
+        const w = await c.workletProbe(t, t + 0.006);
+        return { buf: c.channelRms(1, t, t + 0.006), worklet: w.ch1.rms };
+      }, t);
+    const ticks = st.pageTicks.filter((p: any) => Number.isFinite(p.t)).slice(0, 6);
+    for (const p of ticks) {
+      const r = await at(p.t);
+      expect(r.buf).toBeGreaterThan(0.01);
+      expect(r.worklet).toBeCloseTo(r.buf, 6);
+    }
+    // Each stroke (the cowbell) is over within 80 ms: between two ticks that
+    // are further apart than that, silence.
+    const gaps = st.pageTicks
+      .map((p: any, k: number, all: any[]) => (k ? [all[k - 1].t, p.t] : null))
+      .filter((g: any) => g && g[1] - g[0] > 0.15);
+    expect(gaps.length).toBeGreaterThan(0);
+    const [g0, g1] = gaps[0];
+    expect(
+      await page.evaluate(([a, b]) => (window as any)._listenTest.fixCtl.channelRms(1, a + 0.085, b - 0.005), [g0, g1]),
+    ).toBe(0);
+    // The slider is the recording ↔ clicks mix now: all the way right, clicks only.
+    await page.locator('.fix-balance input[type="range"]').fill('100');
+    st = await fixState(page);
+    expect(st.aud.clickMix).toBe(1);
+    expect(st.aud.gains).toEqual({ L: 0, R: 1, xL: 1, xR: 0 });
+    expect(st.aud.balance).toBe(0); // the synth's balance is kept apart
+    // A drag moves the selected tick: its click moves with it.
+    const before = st.selT;
+    await dragSelectedTick(page, 30);
+    st = await fixState(page);
+    expect(st.selT).toBeGreaterThan(before + 0.01);
+    const moved = await at(st.selT);
+    expect(moved.buf).toBeGreaterThan(0.01);
+    expect(moved.worklet).toBeCloseTo(moved.buf, 6);
+    expect(st.aud.clickWrites).toBeGreaterThan(0);
+    // Undo, still in Clicks: the click is back where it was.
+    await page.click('#undo-btn');
+    await page.waitForFunction((t) => Math.abs((window as any)._listenTest.fix.selT - t) < 1e-9, before);
+    expect((await at(before)).buf).toBeGreaterThan(0.01);
+    // Synth: channel 1 holds exactly the synth again — kept up to date behind
+    // the clicks through the drag and its undo — and the cross routes close.
+    await page.click('#fix-ear-synth');
+    st = await fixState(page);
+    expect(st.aud.earMode).toBe('synth');
+    expect(st.aud.gains).toEqual({ L: 1, R: 1, xL: 0, xR: 0 });
+    await expect(page.locator('.fix-balance input[type="range"]')).toHaveValue('0');
+    const back = await page.evaluate(() => (window as any)._listenTest.fixCtl.channelRms(1, 3, 10));
+    expect(back).toBeCloseTo(synthRms, 6);
+    // The choice survives a session: Clicks again on the next entry.
+    await page.click('#fix-ear-clicks');
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await expect(page.locator('#fix-ear-clicks')).toBeChecked();
+    await page.waitForFunction(() => (window as any)._listenTest.fix.aud?.clickCount > 0);
+    await expect(page.locator('.fix-balance input[type="range"]')).toHaveValue('100');
+    await page.click('#fix-ear-synth'); // leave the module state as the other tests expect
+    await page.locator('.fix-balance input[type="range"]').fill('0');
+  });
+
   test('43.24 the speed slider slows playback pitch-preserved; the % button resets to 100', async ({
     page,
   }) => {
@@ -4495,6 +4576,35 @@ test.describe('43: score-less correction (B1)', () => {
     await page.click('#fix-chooser-open');
     await expect(row.locator('.fix-chooser-total')).toHaveText(`${n} markers ·`);
     await expect(row.locator('.fix-chooser-count')).toHaveText('no anchors');
+    expect(errors).toEqual([]);
+  });
+
+  test('43.81 score-less, the ear choice is Reference / Clicks: Clicks puts a click on every tick (the recording\'s projected reference onsets) over the warped reference ear, and Reference brings that ear back', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await expect(page.locator('label[for="fix-ear-synth"]')).toHaveText('reference');
+    await page.click('#fix-ear-clicks');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.aud?.clickCount > 0);
+    let st = await fixState(page);
+    expect(st.aud.clickCount).toBe(REF_ONSETS.length);
+    expect(st.aud.gains).toEqual({ L: 1, R: 1, xL: 1, xR: 1 });
+    for (const p of st.pageTicks.filter((p: any) => Number.isFinite(p.t)).slice(0, 4)) {
+      const r = await page.evaluate(async (t) => {
+        const c = (window as any)._listenTest.fixCtl;
+        const w = await c.workletProbe(t, t + 0.006);
+        return { buf: c.channelRms(1, t, t + 0.006), worklet: w.ch1.rms };
+      }, p.t);
+      expect(r.buf).toBeGreaterThan(0.01);
+      expect(r.worklet).toBeCloseTo(r.buf, 6);
+    }
+    await page.click('#fix-ear-synth');
+    st = await fixState(page);
+    expect(st.aud.earMode).toBe('synth');
+    expect(st.aud.gains).toEqual({ L: 1, R: 1, xL: 0, xR: 0 });
     expect(errors).toEqual([]);
   });
 });

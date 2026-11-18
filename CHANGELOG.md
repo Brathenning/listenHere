@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.139.0 -- Correction: clicks on the ticks
+
+* Correction mode's Playback controls choose what the audition plays beside the recording: the synth (score-less, the reference) as before, or clicks. Clicks puts a synthesized cowbell (after Gordon Reid, Sound On Sound, September 2002) on every tick where it stands now, following each edit, with the recording in both ears; the balance slider then mixes the recording against the clicks. In all three modes.
+* Testing: 43.80, 43.81, and 60.4 new; 42.32 also keeps "synth / clicks" on one line; specs 42, 43, and 60 pass (126, Chromium).
+
 ### 0.137.0 -- Correction: go to a section of the score
 
 * Correction mode's Score controls add a "Go to section…" menu listing the MEI's sections (named by `@label`, else `@xml:id`, else the measure range; nested ones indented in the open list). Picking one selects its first note, with playback starting 0.5 s before it. The menu names the section being played, holds still while in use, and glows briefly when the section changes. Not in score-less sessions.

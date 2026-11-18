@@ -344,6 +344,13 @@ let _announceTimer = null;
 /** Audition L/R balance, −1 (recording only) … +1 (synth only); 0 = even.
  *  A listening-ergonomics preference, so it survives sessions and pieces. */
 let _audBalance = 0;
+/** What the audition's second channel carries: "synth" (score-less, the
+ *  warped reference) or "clicks" — one click on every tick, heard with the
+ *  recording in both ears (UI note 5, ruled 2026-11-11). Like the balance, a
+ *  listening preference that survives sessions and pieces. */
+let _earMode = "synth";
+/** Clicks mode's mix, −1 (the recording only) … +1 (the clicks only). */
+let _clickMix = 0;
 /** A remembered switch (localStorage), or `dflt` when unset or unavailable. */
 function _prefBool(key, dflt) {
   try {
@@ -2468,25 +2475,66 @@ function _buildDom(contentEl, waveformsEl) {
   });
   speed.append(speedSlow, speedInput, speedFast, speedReset);
 
-  // Real-time L/R balance: left ear = the recording, right ear = the synth.
+  // What the second sound is: the synth (score-less, the reference) in the
+  // right ear, or clicks on the ticks with the recording in both ears (UI
+  // note 5). Radios in the snap target's shape, on their own row over the
+  // slider they re-purpose.
+  const earRow = document.createElement("span");
+  earRow.className = "fix-snap-target-row fix-ear-row";
+  earRow.id = "fix-ear";
+  const earRadios = {};
+  for (const [v, label, title] of [
+    [
+      "synth",
+      f.scoreless ? "reference" : "synth",
+      `Right ear: ${_rightEar()}; the slider is the balance between the ears`,
+    ],
+    [
+      "clicks",
+      "clicks",
+      "Both ears: the recording, and a click on every tick where it stands now; " +
+        "the slider mixes the two",
+    ],
+  ]) {
+    const r = document.createElement("input");
+    r.type = "radio";
+    r.name = "fix-ear";
+    r.id = `fix-ear-${v}`;
+    r.value = v;
+    r.checked = _earMode === v;
+    r.title = title;
+    r.addEventListener("change", () => {
+      if (!r.checked) return;
+      r.blur();
+      _setEarMode(v);
+    });
+    const l = document.createElement("label");
+    l.htmlFor = r.id;
+    l.title = title;
+    l.textContent = label;
+    earRow.append(r, l);
+    earRadios[v] = r;
+  }
+
+  // Real-time L/R balance: left ear = the recording, right ear = the synth;
+  // in Clicks mode, the recording ↔ clicks mix (_syncEarControls).
   const balance = document.createElement("span");
   balance.className = "fix-balance";
-  balance.title =
-    `Audition balance — left ear: the recording, right ear: ${_rightEar()}`;
-  const balanceL = _sliderIcon("\u{1F3BB}", "Left ear: the recording");
+  const balanceL = _sliderIcon("\u{1F3BB}", "");
   const balanceInput = document.createElement("input");
   balanceInput.type = "range";
   balanceInput.min = "-100";
   balanceInput.max = "100";
   balanceInput.step = "5";
-  balanceInput.value = String(Math.round(_audBalance * 100));
-  balanceInput.setAttribute("aria-label", "Audition balance (recording ↔ synth)");
-  // The synth is a computer; score-less, the right ear is the reference — the target.
-  const balanceR = _sliderIcon(f.scoreless ? "\u{1F3AF}" : "\u{1F4BB}", `Right ear: ${_rightEar()}`);
+  const balanceR = _sliderIcon("", "");
   balanceInput.addEventListener("input", () => {
-    _audBalance = Number(balanceInput.value) / 100;
+    const v = Number(balanceInput.value) / 100;
+    if (_earMode === "clicks") _clickMix = v;
+    else _audBalance = v;
     if (_fix?.aud) _applyAudBalance(_fix.aud);
   });
+  f.earEls = { radios: earRadios, balance, balanceInput, balanceL, balanceR };
+  _syncEarControls(f);
   // Give the keyboard back to the fix screen once the thumb is released
   // (a focused range input would otherwise swallow the arrow keys).
   balanceInput.addEventListener("pointerup", () => balanceInput.blur());
@@ -2649,7 +2697,7 @@ function _buildDom(contentEl, waveformsEl) {
   fsScore.body.append(pageCtl);
   if (sectionSel) fsScore.body.append(sectionSel);
   const fsPlayback = fieldset("fix-fs-playback", "Playback", "Collapse / expand playback options");
-  fsPlayback.body.append(pageOnlyRow, replayRow, speed, balance);
+  fsPlayback.body.append(pageOnlyRow, replayRow, speed, earRow, balance);
   const fsSnap = fieldset("fix-fs-snap", "Snap to onsets", "Collapse / expand the snap-to-onset controls");
   fsSnap.body.append(snapRow, snapTargetRow);
   const fsLanes = fieldset("fix-fs-lanes", "Lanes", "Collapse / expand the strip's lanes");
@@ -3077,6 +3125,27 @@ const FIX_TRANSPORT_TITLES = {
   "seek-fwd": "Next onset (Right arrow)",
   "skip-end": "Next page (Down arrow)",
 };
+
+/** The balance slider's value, icons, and words for the current ear mode. */
+function _syncEarControls(f) {
+  const e = f.earEls;
+  if (!e) return;
+  e.radios[_earMode].checked = true;
+  const clicks = _earMode === "clicks";
+  e.balanceInput.value = String(Math.round((clicks ? _clickMix : _audBalance) * 100));
+  e.balanceInput.setAttribute(
+    "aria-label",
+    clicks ? "Audition mix (recording ↔ clicks)" : "Audition balance (recording ↔ synth)",
+  );
+  e.balance.title = clicks
+    ? "Audition mix — both ears: the recording against the clicks on the ticks"
+    : `Audition balance — left ear: the recording, right ear: ${_rightEar()}`;
+  e.balanceL.title = clicks ? "The recording" : "Left ear: the recording";
+  // The synth is a computer; score-less, the right ear is the reference —
+  // the target; a click is a drumstick's tap.
+  e.balanceR.textContent = clicks ? "\u{1F941}" : f.scoreless ? "\u{1F3AF}" : "\u{1F4BB}";
+  e.balanceR.title = clicks ? "The clicks" : `Right ear: ${_rightEar()}`;
+}
 
 /** What the audition's right ear carries: the synth, or score-less the
  *  reference itself, warped to the recording by the stretch worklet. */
@@ -5356,6 +5425,7 @@ function _lowerBound(arr, v) {
 function _redrawOverlays() {
   const f = _fix;
   if (!f) return;
+  _syncClicks(); // the clicks follow the ticks
   const strip = f.els.strip;
   const canvas = f.els.ticks;
   const w = strip.clientWidth;
@@ -6312,6 +6382,14 @@ function _buildAuditionBuffer(f, refSamples, audNotes) {
   splitter.connect(gainR, 1);
   gainL.connect(merger, 0, 0);
   gainR.connect(merger, 0, 1);
+  // The cross routes, open only in Clicks mode: channel 0 (the recording)
+  // into the right ear too, channel 1 (the clicks) into the left.
+  const xR = ctx.createGain();
+  const xL = ctx.createGain();
+  splitter.connect(xR, 0);
+  splitter.connect(xL, 1);
+  xR.connect(merger, 0, 1);
+  xL.connect(merger, 0, 0);
   merger.connect(ctx.destination);
   f.aud = {
     ctx,
@@ -6319,6 +6397,10 @@ function _buildAuditionBuffer(f, refSamples, audNotes) {
     splitter,
     gainL,
     gainR,
+    xL,
+    xR,
+    clickTimes: null, // the tick times the click track was last written for
+    clickGain: 0,
     synthCh: new Float32Array(n), // raw synth; master gain applied on copy
     duration: n / FIX_SR,
     notes: audNotes,
@@ -6363,10 +6445,214 @@ function _medianFrameRms(ch) {
   return vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
 }
 
-/** Constant-sum pan: the boosted ear stays at 1, the other attenuates. */
+/** Constant-sum pan: the boosted ear stays at 1, the other attenuates. In
+ *  Clicks mode the same law mixes the recording against the clicks, each
+ *  sent to both ears. */
 function _applyAudBalance(a) {
+  if (_earMode === "clicks") {
+    const rec = _clickMix > 0 ? 1 - _clickMix : 1;
+    const clk = _clickMix < 0 ? 1 + _clickMix : 1;
+    a.gainL.gain.value = rec;
+    a.xR.gain.value = rec;
+    a.gainR.gain.value = clk;
+    a.xL.gain.value = clk;
+    return;
+  }
   a.gainL.gain.value = _audBalance > 0 ? 1 - _audBalance : 1;
   a.gainR.gain.value = _audBalance < 0 ? 1 + _audBalance : 1;
+  a.xL.gain.value = 0;
+  a.xR.gain.value = 0;
+}
+
+/**
+ * The click is a synthesized COWBELL (user and Werner Goebl, 2026-11-18: a
+ * salient musical sound beats a bare tick). The recipe follows Gordon Reid,
+ * "Synthesizing Cowbells & Claves", Sound On Sound, September 2002 (Synth
+ * Secrets), whose recreation of a Roland drum machine's cowbell uses two
+ * triangle oscillators at about 587 and 845 Hz, the higher mixed louder for
+ * "clank", through a 12 dB/octave band-pass at 2.64 kHz with a little
+ * resonance, under a contour of a short loud impact and a longer tail. Reid
+ * gives no times; the two decays here are ours, kept short (the sound is
+ * gone by ~80 ms) so that fast passages — Fledermaus runs to well over ten
+ * onsets a second — stay a string of strokes, not a wash. Synthesized, not
+ * sampled: it starts on its first sample, exactly on the tick, where a
+ * recording's attack would make every tick sound late, and there is no
+ * licence or provenance to keep. Unit peak; the level is the track's gain.
+ */
+const CLICK_SEC = 0.08;
+const CLICK_OSC_HZ = [587, 845];
+const CLICK_OSC_MIX = [0.65, 1];
+const CLICK_BP_HZ = 2640;
+const CLICK_BP_Q = 1.4; // "a little resonance"
+const CLICK_IMPACT_SEC = 0.006; // the impact's decay constant
+const CLICK_TAIL_SEC = 0.022; // the tail's
+const CLICK_TAIL_LEVEL = 0.35;
+/** The click's peak relative to the recording's typical (median non-silent
+ *  frame RMS) level, clamped below full scale. */
+const CLICK_LEVEL = 4;
+let _clickWave = null;
+function _clickShape() {
+  if (_clickWave) return _clickWave;
+  const n = Math.round(CLICK_SEC * FIX_SR);
+  const raw = new Float32Array(n);
+  const tri = (ph) => 1 - 4 * Math.abs((ph % 1) - 0.5); // 0 → −1 … +1, period 1
+  for (let i = 0; i < n; i++) {
+    const t = i / FIX_SR;
+    let v = 0;
+    // Each triangle from its rising zero crossing, so the stroke starts at 0.
+    for (let k = 0; k < 2; k++) v += CLICK_OSC_MIX[k] * tri(CLICK_OSC_HZ[k] * t + 0.75);
+    raw[i] = v;
+  }
+  // RBJ band-pass biquad (constant 0 dB peak gain), 12 dB/octave skirts.
+  const w0 = (2 * Math.PI * CLICK_BP_HZ) / FIX_SR;
+  const alpha = Math.sin(w0) / (2 * CLICK_BP_Q);
+  const a0 = 1 + alpha;
+  const b0 = alpha / a0;
+  const b2 = -alpha / a0;
+  const a1 = (-2 * Math.cos(w0)) / a0;
+  const a2 = (1 - alpha) / a0;
+  const out = new Float32Array(n);
+  let x1 = 0;
+  let x2 = 0;
+  let y1 = 0;
+  let y2 = 0;
+  for (let i = 0; i < n; i++) {
+    const x = raw[i];
+    const y = b0 * x + b2 * x2 - a1 * y1 - a2 * y2;
+    x2 = x1;
+    x1 = x;
+    y2 = y1;
+    y1 = y;
+    out[i] = y;
+  }
+  // Impact plus tail, then a 5 ms fade so the truncation never clicks itself.
+  let peak = 0;
+  const fadeN = Math.round(0.005 * FIX_SR);
+  for (let i = 0; i < n; i++) {
+    const t = i / FIX_SR;
+    let env =
+      (1 - CLICK_TAIL_LEVEL) * Math.exp(-t / CLICK_IMPACT_SEC) +
+      CLICK_TAIL_LEVEL * Math.exp(-t / CLICK_TAIL_SEC);
+    if (i > n - fadeN) env *= (n - i) / fadeN;
+    out[i] *= env;
+    peak = Math.max(peak, Math.abs(out[i]));
+  }
+  for (let i = 0; i < n; i++) out[i] /= peak;
+  _clickWave = out;
+  return out;
+}
+
+/** Every tick's live time on the strip recording, sorted. */
+function _clickTimes(f) {
+  const out = [];
+  for (const g of f.groups) {
+    const t = _groupStripTime(g);
+    if (Number.isFinite(t)) out.push(t);
+  }
+  return Float64Array.from(out).sort();
+}
+
+/** Write the click track over [t0, t1) into channel 1 — the AudioBuffer and
+ *  the stretch worklet's own copy — from the sorted tick times. */
+function _writeClickWindow(a, t0, t1, times) {
+  const shape = _clickShape();
+  const iLo = Math.max(0, Math.floor(t0 * FIX_SR));
+  const iHi = Math.min(a.buffer.length, Math.ceil(t1 * FIX_SR));
+  if (iHi <= iLo) return;
+  const out = new Float32Array(iHi - iLo);
+  let k = 0;
+  let hi = times.length;
+  const from = t0 - CLICK_SEC;
+  while (k < hi) {
+    const mid = (k + hi) >> 1;
+    if (times[mid] < from) k = mid + 1;
+    else hi = mid;
+  }
+  for (; k < times.length && times[k] < t1; k++) {
+    const s0 = Math.round(times[k] * FIX_SR) - iLo;
+    for (let j = 0; j < shape.length; j++) {
+      const idx = s0 + j;
+      if (idx >= 0 && idx < out.length) out[idx] += shape[j] * a.clickGain;
+    }
+  }
+  a.buffer.copyToChannel(out, 1, iLo);
+  a.stretch?.port.postMessage({ type: "patch", ch: 1, offset: iLo, data: out }, [out.buffer]);
+}
+
+/**
+ * Clicks mode: bring the click track up to date with the ticks. Called on
+ * every overlay redraw — after any fix, undo, or added tick — so the clicks
+ * follow edits live; only the spans around ticks that moved, appeared, or
+ * went are rewritten (the first call writes the whole track).
+ */
+function _syncClicks() {
+  const f = _fix;
+  const a = f?.aud;
+  if (!a?.ready || _earMode !== "clicks") return;
+  const next = _clickTimes(f);
+  const prev = a.clickTimes;
+  a.clickTimes = next;
+  if (!prev) {
+    _writeClickWindow(a, 0, a.duration, next);
+    return;
+  }
+  // The ticks in one list and not the other (both sorted).
+  const dirty = [];
+  let i = 0;
+  let j = 0;
+  while (i < prev.length || j < next.length) {
+    if (j >= next.length || (i < prev.length && prev[i] < next[j])) dirty.push(prev[i++]);
+    else if (i >= prev.length || next[j] < prev[i]) dirty.push(next[j++]);
+    else {
+      i++;
+      j++;
+    }
+  }
+  if (!dirty.length) return;
+  dirty.sort((x, y) => x - y);
+  let w0 = dirty[0];
+  let w1 = w0 + CLICK_SEC;
+  for (let k = 1; k <= dirty.length; k++) {
+    const t = dirty[k];
+    if (k < dirty.length && t <= w1 + 0.5) {
+      w1 = Math.max(w1, t + CLICK_SEC);
+      continue;
+    }
+    _writeClickWindow(a, w0, w1, next);
+    if (k < dirty.length) {
+      w0 = t;
+      w1 = t + CLICK_SEC;
+    }
+  }
+  a.clickWrites = (a.clickWrites || 0) + 1; // test surface
+}
+
+/** Switch the second channel between the synth (score-less: the warped
+ *  reference) and the click track. */
+function _setEarMode(mode) {
+  _earMode = mode;
+  const f = _fix;
+  const a = f?.aud;
+  if (f) _syncEarControls(f);
+  if (!a) return;
+  _applyAudBalance(a);
+  if (!a.ready) return; // _finishAuditionRender applies the mode
+  _applyEarMode(f, a);
+}
+
+function _applyEarMode(f, a) {
+  a.stretch?.port.postMessage({ type: "ear", held: _earMode === "clicks" });
+  if (_earMode === "clicks") {
+    if (!a.clickGain) {
+      const rec = _medianFrameRms(a.buffer.getChannelData(0));
+      a.clickGain = Math.min(0.9, rec > 1e-5 ? CLICK_LEVEL * rec : 0.3);
+    }
+    a.clickTimes = null;
+    _syncClicks();
+  } else {
+    a.clickTimes = null;
+    _copySynthToBuffer(f, 0, a.duration);
+  }
 }
 
 async function _finishAuditionRender(f) {
@@ -6409,6 +6695,7 @@ async function _finishAuditionRender(f) {
   if (_fix !== f || f.aud !== a) return;
   a.rendering = false;
   a.ready = true;
+  if (_earMode === "clicks") _applyEarMode(f, a);
   _updatePlayBtn();
   _schedulePlayheadFrame();
 }
@@ -6588,6 +6875,8 @@ function _scaledSynth(a, iLo, iHi) {
  *  attached, the same window patched into its own copy. */
 function _copySynthToBuffer(f, t0, t1) {
   const a = f.aud;
+  // Clicks mode holds channel 1; the synth keeps rendering for the way back.
+  if (_earMode === "clicks") return;
   const iLo = Math.max(0, Math.floor(t0 * FIX_SR));
   const iHi = Math.min(a.synthCh.length, Math.ceil(t1 * FIX_SR));
   if (iHi <= iLo) return;
@@ -10128,6 +10417,17 @@ export function fixTestState() {
           time: _audPos(),
           duration: f.aud.duration,
           balance: _audBalance,
+          earMode: _earMode,
+          clickMix: _clickMix,
+          clickCount: f.aud.clickTimes ? f.aud.clickTimes.length : null,
+          clickGain: f.aud.clickGain,
+          clickWrites: f.aud.clickWrites ?? 0,
+          gains: {
+            L: f.aud.gainL.gain.value,
+            R: f.aud.gainR.gain.value,
+            xL: f.aud.xL.gain.value,
+            xR: f.aud.xR.gain.value,
+          },
           rate: f.aud.rate,
           stretch: !!f.aud.stretch,
           workletPos: f.aud.workletPos,
@@ -10170,6 +10470,15 @@ export const fixTestControl = {
   /** Peak/RMS of the STRETCH WORKLET's own copy over [t0, t1) — what playback
    *  reads, which channelRms (the AudioBuffer) cannot see. */
   workletProbe: (t0, t1) => _workletProbe(t0, t1),
+  /** One channel's samples over [t0, t1) — for listening probes. */
+  channelSlice(ch, t0, t1) {
+    const a = _fix?.aud;
+    if (!a) return null;
+    const data = a.buffer.getChannelData(ch);
+    return Array.from(data.subarray(Math.max(0, Math.floor(t0 * FIX_SR)), Math.ceil(t1 * FIX_SR)));
+  },
+  /** The click (cowbell) at unit peak, at the audition's rate. */
+  clickShape: () => Array.from(_clickShape()),
   /** RMS of one channel over [t0, t1] — proves an ear holds real signal. */
   channelRms(ch, t0, t1) {
     const a = _fix?.aud;

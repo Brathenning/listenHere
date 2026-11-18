@@ -1902,9 +1902,15 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
         regionOverflowY: getComputedStyle(navBody).overflowY,
         regionNeedsScroll: navBody.scrollHeight > navBody.clientHeight + 1,
         magnetW: Math.round(btn.width),
-        // "detected / perceived" on ONE line: both labels share a top edge.
+        // "detected / perceived" on ONE line: both labels share a top edge;
+        // so do "synth / clicks".
         radioTops: new Set(
-          Array.from(document.querySelectorAll('.fix-snap-target-row label')).map((l) =>
+          Array.from(document.querySelectorAll('#fix-snap-target label')).map((l) =>
+            Math.round(l.getBoundingClientRect().top),
+          ),
+        ).size,
+        earTops: new Set(
+          Array.from(document.querySelectorAll('#fix-ear label')).map((l) =>
             Math.round(l.getBoundingClientRect().top),
           ),
         ).size,
@@ -1925,6 +1931,7 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
       };
     });
     expect(fit.radioTops).toBe(1);
+    expect(fit.earTops).toBe(1);
     expect(fit.exit.round).toBe('50%');
     expect(fit.exit.w).toBe(fit.exit.h);
     expect(fit.exit.nearTop).toBe(true);
