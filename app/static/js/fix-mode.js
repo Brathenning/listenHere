@@ -2460,8 +2460,39 @@ function _buildDom(contentEl, waveformsEl) {
   // READOUT, beside the controls it belongs with.
   const pageCtl = document.createElement("span");
   pageCtl.className = "fix-page-ctl";
+  // "Page n / N" with n an integer field: type a page and press Enter (the
+  // user's ruling, 2026-11-11). Score-less, a clock range leads the line.
   const pageLabel = document.createElement("span");
   pageLabel.className = "fix-page-label";
+  const pagePrefix = document.createElement("span");
+  pagePrefix.className = "fix-page-prefix";
+  const pageInput = document.createElement("input");
+  pageInput.type = "number";
+  pageInput.id = "fix-page-input";
+  pageInput.className = "fix-page-input";
+  pageInput.min = "1";
+  pageInput.step = "1";
+  pageInput.title = "Go to page: type a number and press Enter (Home / End: first / last page)";
+  pageInput.setAttribute("aria-label", "Page number");
+  const pageTotal = document.createElement("span");
+  pageTotal.className = "fix-page-total";
+  pageLabel.append(pagePrefix, pageInput, pageTotal);
+  pageInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      _gotoPage(Number(pageInput.value));
+      pageInput.blur(); // the keyboard goes back to the correction screen
+    } else if (e.key === "Escape") {
+      // Put the current page back BEFORE the blur, or the blur's change
+      // event would go to the abandoned number.
+      e.preventDefault();
+      if (_fix) pageInput.value = String(_fix.page);
+      pageInput.blur();
+    }
+  });
+  // The spinner arrows (and a typed value left by Tab) turn the page too.
+  pageInput.addEventListener("change", () => _gotoPage(Number(pageInput.value)));
+  pageInput.addEventListener("blur", () => _syncPageInput());
   // Score zoom beside the page readout: fit, fill width / height, or a
   // percentage of the fit (+ / − step it); the pane scrolls when it overflows.
   const zoomSel = mkSelect(
@@ -2899,6 +2930,9 @@ function _buildDom(contentEl, waveformsEl) {
     playhead,
     conn,
     pageLabel,
+    pagePrefix,
+    pageInput,
+    pageTotal,
     chip,
     title,
     playBtn,
@@ -3003,6 +3037,12 @@ export function fixTransport(action) {
       break;
     case "skip-end":
       _turnPage(1);
+      break;
+    case "page-first":
+      _gotoPage(1);
+      break;
+    case "page-last":
+      _gotoPage(_fix.pageCount);
       break;
     case "mark":
       // The mark button is hidden while correcting (CSS, on
@@ -3160,6 +3200,17 @@ function _groupsOnPage(page) {
   return _fix.groups.filter((g) => g.page === page);
 }
 
+/** The page field shows the current page and its range, unless the user is
+ *  typing in it. */
+function _syncPageInput() {
+  const f = _fix;
+  const inp = f?.els?.pageInput;
+  if (!inp) return;
+  inp.max = String(f.pageCount);
+  f.els.pageTotal.textContent = ` / ${f.pageCount}`;
+  if (document.activeElement !== inp) inp.value = String(f.page);
+}
+
 /** Render (or re-show) one score page and rebuild its per-page caches. */
 function _renderPage(page) {
   const f = _fix;
@@ -3168,9 +3219,10 @@ function _renderPage(page) {
   if (f.scoreless) {
     // No score page to draw: the page is a stretch of reference time.
     const on = _groupsOnPage(page).map((g) => _groupRefT(g));
-    f.els.pageLabel.textContent = on.length
-      ? `${_fmtClock(Math.min(...on))}–${_fmtClock(Math.max(...on))} · ${page} / ${f.pageCount}`
-      : `${page} / ${f.pageCount}`;
+    f.els.pagePrefix.textContent = on.length
+      ? `${_fmtClock(Math.min(...on))}–${_fmtClock(Math.max(...on))} · `
+      : "";
+    _syncPageInput();
     f.refWindow = _refPageWindow();
     _updateStripWindow();
     _scheduleRedraw();
@@ -3190,7 +3242,8 @@ function _renderPage(page) {
   });
   _applyScoreZoom(); // size the page BEFORE the geometry reads its rects
   _buildPageGeometry(page);
-  f.els.pageLabel.textContent = `Page ${page} / ${f.pageCount}`;
+  f.els.pagePrefix.textContent = "Page ";
+  _syncPageInput();
   _updateStripWindow();
   _scheduleRedraw();
   _schedulePlayheadFrame();
@@ -3314,10 +3367,19 @@ function _applyUnderlaySelection() {
 }
 
 function _turnPage(delta) {
+  _gotoPage(_fix.page + delta);
+}
+
+/** Go to a page (clamped): the transport's arrows, first / last, Home / End,
+ *  and the page number field all land here. */
+function _gotoPage(page) {
   const f = _fix;
   _commitPendingNudge();
-  const page = Math.min(Math.max(1, f.page + delta), f.pageCount);
-  if (page === f.page) return;
+  page = Math.min(Math.max(1, Math.round(page)), f.pageCount);
+  if (!Number.isFinite(page) || page === f.page) {
+    _syncPageInput();
+    return;
+  }
   // Keep the selection meaningful: land it on the new page's first onset.
   const first = f.groups.findIndex((g) => g.page === page);
   if (first !== -1) _select(first, { seek: true });
@@ -9173,6 +9235,14 @@ function _onFixKeydown(e) {
         break;
       }
       _turnPage(e.code === "ArrowUp" ? -1 : 1);
+      break;
+    case "Home":
+    case "End":
+      if (e.shiftKey || e.altKey || e.metaKey || e.ctrlKey) {
+        handled = false;
+        break;
+      }
+      _gotoPage(e.code === "Home" ? 1 : f.pageCount);
       break;
     case "Enter": {
       if (e.altKey) {

@@ -4928,6 +4928,10 @@ document.addEventListener("DOMContentLoaded", () => {
     wavesurfers[currentAudioIx].seekTo(1);
   });
 
+  // First / last page: correction mode only (hidden otherwise).
+  document.getElementById("fix-page-first").addEventListener("click", () => fixTransport("page-first"));
+  document.getElementById("fix-page-last").addEventListener("click", () => fixTransport("page-last"));
+
   // mark button — places a new marker, or removes the active marker when
   // paused at one in close-listening mode
   document.getElementById("mark").addEventListener("click", function (e) {

@@ -538,7 +538,8 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     expect(
       await page.locator('.fix-score-svg g.note').count(),
     ).toBeGreaterThan(20);
-    await expect(page.locator('.fix-page-label')).toHaveText(/Page 1 \/ \d+/);
+    await expect(page.locator('.fix-page-label')).toHaveText(/^Page\s*\/ \d+$/);
+    await expect(page.locator('#fix-page-input')).toHaveValue('1');
     const st = await fixState(page);
     expect(st.mode).toBe('score-ref');
     expect(st.refFile).toBe(REF_ROW);
@@ -650,7 +651,63 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     expect(after.selGroup).toBeGreaterThan(before.pageGroupCount - 1);
     // …and the strip viewport moved forward in reference time.
     expect(after.stripWindow.t0).toBeGreaterThan(before.stripWindow.t0);
-    await expect(page.locator('.fix-page-label')).toHaveText(/Page 2 \/ \d+/);
+    await expect(page.locator('#fix-page-input')).toHaveValue('2');
+  });
+
+  test('42.40 first / last page sit at the transport\'s two ends in correction mode only; Home and End do the same; the page number is a field that takes a typed page', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await expect(page.locator('#fix-page-first')).toBeHidden();
+    await expect(page.locator('#fix-page-last')).toBeHidden();
+    await enterFix(page, REF_ROW);
+    const n = (await fixState(page)).pageCount;
+    expect(n).toBeGreaterThan(2);
+    // Outermost in the row, spaced like their neighbours (skip-back sits
+    // flush against seek-back, so first page sits flush against skip-back).
+    const ends = await page.evaluate(() => {
+      const r = (id: string) => document.getElementById(id)!.getBoundingClientRect();
+      return {
+        before: r('skip-back').left - r('fix-page-first').right,
+        after: r('fix-page-last').left - r('skip-end').right,
+        inner: r('seek-back').left - r('skip-back').right,
+      };
+    });
+    expect(Math.abs(ends.before - ends.inner)).toBeLessThan(1);
+    expect(Math.abs(ends.after - ends.inner)).toBeLessThan(1);
+    const at = async (p: number) => {
+      await page.waitForFunction((p) => (window as any)._listenTest.fix.page === p, p);
+      await expect(page.locator('#fix-page-input')).toHaveValue(String(p));
+      expect((await fixState(page)).selPage).toBe(p); // the selection lands on that page
+    };
+    await page.click('#fix-page-last');
+    await at(n);
+    await page.click('#fix-page-first');
+    await at(1);
+    await page.keyboard.press('End');
+    await at(n);
+    await page.keyboard.press('Home');
+    await at(1);
+    // The field: a typed page and Enter goes there; out of range clamps;
+    // Escape abandons the typing and shows the current page again.
+    await page.fill('#fix-page-input', '2');
+    await page.press('#fix-page-input', 'Enter');
+    await at(2);
+    await page.fill('#fix-page-input', '999');
+    await page.press('#fix-page-input', 'Enter');
+    await at(n);
+    await page.fill('#fix-page-input', '1');
+    await page.press('#fix-page-input', 'Escape');
+    await expect(page.locator('#fix-page-input')).toHaveValue(String(n));
+    expect((await fixState(page)).page).toBe(n);
+    // Typing in the field does not reach the correction screen's keys.
+    await page.fill('#fix-page-input', '');
+    await page.press('#fix-page-input', 'Home');
+    expect((await fixState(page)).page).toBe(n);
+    await page.press('#fix-page-input', 'Escape');
+    await page.click('#fix-exit');
+    await expect(page.locator('#fix-page-first')).toBeHidden();
   });
 
   test('42.21 the strip WAVEFORM gets the page window on first entry, not only after a page turn', async ({

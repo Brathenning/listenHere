@@ -7775,6 +7775,29 @@ body.fix-mode-open .icon-fix-mode {
 body.fix-mode-open #mark {
   display: none;
 }
+/* First / last page: correction mode only, outermost in the row and spaced
+   like the other buttons. */
+#transport .fix-only {
+  display: none;
+}
+body.fix-mode-open #transport .fix-only {
+  display: flex;
+}
+/* The page field: three digits snugly, no spinner (Up / Down step it). */
+.fix-page-input {
+  box-sizing: content-box;
+  width: calc(3ch + 2px);
+  padding: 0 1px;
+  font: inherit;
+  text-align: right;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.fix-page-input::-webkit-inner-spin-button,
+.fix-page-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
 .fix-chip {
   align-self: flex-start;
   max-width: 100%;
@@ -8238,12 +8261,15 @@ body.fix-mode-open #mark {
 .fix-page-ctl {
   display: flex;
   align-items: center;
-  gap: 0.4em;
+  gap: 0.3em;
 }
+/* Slim side padding: "Fill width" must fit in Firefox beside the page field. */
 #fix-score-zoom {
   font-size: var(--font-size-small, 0.8em);
   min-width: 0;
   flex: 1;
+  padding-left: 2px;
+  padding-right: 2px;
 }
 .fix-strip-ws[data-placeholder]::after {
   content: attr(data-placeholder);

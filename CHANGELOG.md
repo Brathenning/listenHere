@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.131.0 -- Correction: first / last page and a page field
+
+* Correction mode adds first- and last-page buttons to the blue transport bar, outermost beside the page-turn buttons, with Home and End as keys.
+* The page number in "Page n / N" is a field: type a page and press Enter (out of range goes to the first or last page, Escape keeps the current one). Score-less sessions too.
+* Testing: 42.40 new, 42.2, 42.10, and 43.63 (score-less, now also typing a page, End, and Home) follow the field; specs 42 and 43 pass (116, Chromium).
+
 ### 0.129.0 -- Correction: Enter on a multi-selection
 
 * Enter on several selected ticks (marquee, Shift+click, or A) anchors every free one where it stands; when all are anchored, Enter unanchors them all. Either is one undo step and moves no time; gap endpoints stay with G.

@@ -3890,7 +3890,8 @@ test.describe('43: score-less correction (B1)', () => {
     expect(st.groupCount).toBe(REF_ONSETS.length);
     expect(st.pageCount).toBe(8);
     expect(st.page).toBe(1);
-    await expect(page.locator('.fix-page-label')).toHaveText('0:02.0–0:09.5 · 1 / 8');
+    await expect(page.locator('.fix-page-label')).toHaveText('0:02.0–0:09.5 ·  / 8');
+    await expect(page.locator('#fix-page-input')).toHaveValue('1');
     // Every tick is its reference onset, projected through the target's grid.
     expect(st.pageTicks).toHaveLength(16);
     for (const pt of st.pageTicks) {
@@ -3911,7 +3912,18 @@ test.describe('43: score-less correction (B1)', () => {
     expect(st.aud.duration).toBeGreaterThan(270);
     // Page turns walk reference time.
     await page.click('#skip-end');
-    await expect(page.locator('.fix-page-label')).toHaveText('0:10.0–0:17.5 · 2 / 8');
+    await expect(page.locator('.fix-page-label')).toHaveText('0:10.0–0:17.5 ·  / 8');
+    await expect(page.locator('#fix-page-input')).toHaveValue('2');
+    // The page field and End / Home walk it too (time-window pages).
+    await page.fill('#fix-page-input', '5');
+    await page.press('#fix-page-input', 'Enter');
+    await expect(page.locator('#fix-page-input')).toHaveValue('5');
+    expect((await fixState(page)).page).toBe(5);
+    await page.keyboard.press('End');
+    await expect(page.locator('#fix-page-input')).toHaveValue('8');
+    await page.keyboard.press('Home');
+    await expect(page.locator('#fix-page-input')).toHaveValue('1');
+    await expect(page.locator('.fix-page-label')).toHaveText('0:02.0–0:09.5 ·  / 8');
     expect(errors).toEqual([]);
   });
 
