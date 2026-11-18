@@ -7604,10 +7604,17 @@ body.lh-v6-drawer-open .drawer-btns {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.fix-chooser-count {
+.fix-chooser-count,
+.fix-chooser-total {
   flex: 0 0 auto;
   font-size: 0.85em;
   color: var(--color-text-secondary, var(--color-text-muted, #666));
+}
+.fix-chooser-total {
+  margin-right: -0.3em; /* "N markers · m anchors" reads as one phrase */
+}
+.fix-chooser-total[hidden] {
+  display: none;
 }
 .fix-chooser-go {
   flex: 0 0 auto;

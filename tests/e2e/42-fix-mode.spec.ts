@@ -710,6 +710,49 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await expect(page.locator('#fix-page-first')).toBeHidden();
   });
 
+  test('42.41 the chooser reports each row\'s total markers once the prewarm has built the onset groups: the same count for step 1 and every recording, the count a session then shows; before that the rows read as before', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await page.click('#fix-chooser-open');
+    await page.waitForSelector('.fix-chooser');
+    const totals = () =>
+      page.evaluate(() => ({
+        ready: (window as any)._listenTest.fix.prewarmReady,
+        spans: [...document.querySelectorAll('.fix-chooser-total')].map((el) => ({
+          hidden: (el as HTMLElement).hidden,
+          text: el.textContent,
+          row: (el.closest('.fix-chooser-row') as HTMLElement).dataset.file ?? 'step1',
+        })),
+      }));
+    const before = await totals();
+    // Step 1 and every recording with a grid on the reference raster.
+    expect(before.spans.map((s) => s.row).sort()).toEqual(
+      ['step1', 'audio-a.mp3', 'audio-c.mp3', 'audio-short.mp3'].sort(),
+    );
+    if (!before.ready) {
+      for (const s of before.spans) expect(s).toMatchObject({ hidden: true, text: '' });
+    }
+    // The prewarm lands while the chooser is open: the totals fill in place.
+    await page.waitForFunction(() => (window as any)._listenTest.fix.prewarmReady);
+    await expect(page.locator('.fix-chooser-total').first()).toBeVisible();
+    const after = await totals();
+    const text = after.spans[0].text!;
+    expect(text).toMatch(/^\d{1,3}(,\d{3})* markers ·$/);
+    for (const s of after.spans) expect(s).toMatchObject({ hidden: false, text });
+    await expect(page.locator('.fix-chooser-step[data-step="1"] .fix-chooser-count')).toHaveText(
+      'not yet reviewed',
+    );
+    // The count is the ticks a session shows.
+    await page.click('#fix-chooser-open-ref');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.active);
+    const n = (await fixState(page)).groupCount;
+    expect(text).toBe(`${n.toLocaleString('en-US')} markers ·`);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+  });
+
   test('42.21 the strip WAVEFORM gets the page window on first entry, not only after a page turn', async ({
     page,
   }) => {

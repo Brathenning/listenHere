@@ -4469,4 +4469,31 @@ test.describe('43: score-less correction (B1)', () => {
     expect(st2.refRuler.labels[0].t).toBeGreaterThan(st1.refRuler.labels[0].t);
     expect(errors).toEqual([]);
   });
+
+  test('43.79 score-less, the chooser reports the total markers only once an entry this load has detected the reference\'s onsets: the detected plus the added ticks', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors, {
+      patch: (json) =>
+        (json.header.corrections = { version: 1, base: null, anchors: [], gaps: [], refTicks: [4.78] }),
+    });
+    await page.click('#fix-chooser-open');
+    await page.waitForSelector('.fix-chooser');
+    // Not known yet: the row reads as before.
+    const row = page.locator(`.fix-chooser-row[data-file="${TARGET_ROW}"]`);
+    await expect(row.locator('.fix-chooser-total')).toBeHidden();
+    await expect(row.locator('.fix-chooser-count')).toHaveText('no anchors');
+    await page.keyboard.press('Escape');
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    const n = (await fixState(page)).groupCount;
+    expect(n).toBe(REF_ONSETS.length + 1);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await page.click('#fix-chooser-open');
+    await expect(row.locator('.fix-chooser-total')).toHaveText(`${n} markers ·`);
+    await expect(row.locator('.fix-chooser-count')).toHaveText('no anchors');
+    expect(errors).toEqual([]);
+  });
 });

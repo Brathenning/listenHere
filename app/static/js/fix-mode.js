@@ -586,7 +586,7 @@ function _renderChooser(card) {
   // Score-less, there is no step 1 to review: the recordings stand alone.
   const scoreless = _scoreless();
   const reviewed = scoreless || _scoreRefReviewed;
-  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const plural = (n, word) => `${n.toLocaleString("en-US")} ${word}${n === 1 ? "" : "s"}`;
   card.innerHTML = "";
 
   const head = document.createElement("div");
@@ -633,7 +633,7 @@ function _renderChooser(card) {
     _closeChooser();
     enterFixMode(ref);
   });
-  row1.append(name1, count1, go1);
+  row1.append(name1, _chooserTotalSpan(), count1, go1);
   s1.append(h1, row1);
 
   // Step 2: each recording against the reference.
@@ -697,7 +697,7 @@ function _renderChooser(card) {
       _closeChooser();
       enterFixMode(file);
     });
-    row.append(name, count, go);
+    row.append(name, ...(usable ? [_chooserTotalSpan()] : []), count, go);
     list.appendChild(row);
   }
   if (!candidates.length) {
@@ -709,6 +709,47 @@ function _renderChooser(card) {
   s2.appendChild(list);
   if (scoreless) card.append(head, s2);
   else card.append(head, s1, s2);
+  _fillChooserTotals();
+}
+
+/**
+ * How many alignment markers (ticks) a session would show, anchored or not,
+ * or null while that is not known yet. With a score it is the onset-group
+ * count, the same for step 1 and every recording, known once the prewarm (or
+ * an entry) has built the groups. Score-less it is the reference's detected
+ * onsets plus the ticks the user added, known once an entry this load has
+ * had the worker detect them.
+ */
+function _chooserTotal() {
+  if (!_scoreless()) return _derived ? _derived.groups.length : null;
+  const c = _refOnsetCache;
+  // _refTickCfg's choice, without its side effects (it records the trial's
+  // detector and warns): saved anchors keep theirs, else the URL's.
+  const cfg = hasTargetAnchors(_corrections)
+    ? _refTickDetector || { hop: LANE_HOP, smooth: ONSET_SMOOTH }
+    : _onsetCfg();
+  if (!c || c.file !== getReferenceAudioIx() || c.cfg !== `${cfg.hop}/${cfg.smooth}`) return null;
+  return c.peaks.length + (_corrections.refTicks?.length || 0);
+}
+
+/** An empty slot for a row's marker total, filled by _fillChooserTotals. */
+function _chooserTotalSpan() {
+  const el = document.createElement("span");
+  el.className = "fix-chooser-total";
+  return el;
+}
+
+/** Fill the open chooser's marker totals: in place, so a prewarm that lands
+ *  while the chooser is open shows its count without a re-render. Unknown,
+ *  a row stays as it was. */
+function _fillChooserTotals() {
+  if (!_chooserEl) return;
+  const n = _chooserTotal();
+  const text = n == null ? "" : `${n.toLocaleString("en-US")} marker${n === 1 ? "" : "s"} ·`;
+  for (const el of _chooserEl.querySelectorAll(".fix-chooser-total")) {
+    el.textContent = text;
+    el.hidden = n == null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1659,6 +1700,7 @@ function _runPrewarm() {
   const firstPage = groups[0]?.page || 1;
   svgCache.set(firstPage, tk.renderToSVG(firstPage, {}));
   _derived = { fresh, groups, dims, pageCount, svgCache };
+  _fillChooserTotals(); // the chooser that started this prewarm may be open
   // The engine's runtime is the other half of a slow entry: warm it now too.
   _warmRuntime();
   console.log(

@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.135.0 -- Correction: marker totals in the chooser
+
+* The "Correct alignment" chooser shows each row's total markers, anchored or not, before its anchor count ("2,220 markers · 2,115 anchors, 0 gaps") once the total is known: with a score after the prewarm, score-less after a first entry this load (detected plus added ticks).
+* Testing: 42.41 and 43.79 new; specs 42 and 43 pass (119, Chromium).
+
 ### 0.133.0 -- Correction: time rulers
 
 * Correction mode draws a time ruler along the strip's top and bottom edges, in the recording's seconds, with the playhead between them; score-less, the reference pane has its own ruler in the reference's seconds. The step follows the zoom (labels at least 70 px apart, down to 10 ms).
