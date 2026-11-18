@@ -96,6 +96,7 @@ import {
 } from "./engine/score-rebase.js";
 import { updateTransportIcons } from "./engine/transport.js";
 import { drawRuler } from "./engine/time-axis.js";
+import { meiSections } from "./engine/mei-sections.js";
 import { alignWorkerUrl, createAlignWorker } from "./engine/align-worker-source.js";
 import { confirmDialog } from "./annotation/ui-common.js";
 import { recastAnnotationsToAlignment } from "./annotation/index.js";
@@ -2559,6 +2560,58 @@ function _buildDom(contentEl, waveformsEl) {
   );
   if (f.scoreless) pageCtl.append(pageLabel); // no score to zoom
   else pageCtl.append(pageLabel, zoomSel);
+  // "Go to section": the MEI's sections, each leading to its first onset
+  // with the seek's usual run-up (user, 2026-11-18; the 2026-11-11 ruling
+  // said its first page). The menu shows the section being played, and
+  // holds still while it is in use. Score-less, there is no MEI.
+  const sections = f.scoreless ? [] : _scoreSections();
+  f.sections = sections.length ? _withSectionSpans(sections) : [];
+  const sectionSel = sections.length
+    ? mkSelect(
+        "fix-section",
+        "Go to a section of the score: playback starts just before its first note",
+        [
+          ["", "Go to section…"],
+          ...sections.map((s, k) => [k, s.name]),
+        ],
+        "",
+        (v) => {
+          if (v !== "") _gotoSection(f.sections[Number(v)]);
+        },
+      )
+    : null;
+  if (sectionSel) {
+    // Opened, the menu offers every section afresh — the one being played
+    // included, which a native select would not report as a change — and
+    // follows playback again once it lets go (mkSelect blurs after a pick).
+    // Nested sections are indented under their parent in the open list
+    // only; closed, the menu shows the name alone (user, 2026-11-18).
+    // Non-breaking spaces: an option's leading ordinary spaces collapse.
+    const indent = (on) =>
+      f.sections.forEach((s, k) => {
+        if (!s.depth) return;
+        sectionSel.options[k + 1].textContent = (on ? "\u00a0\u00a0\u00a0".repeat(s.depth) : "") + s.name;
+      });
+    sectionSel.addEventListener("focus", () => {
+      sectionSel.value = "";
+      indent(true);
+    });
+    sectionSel.addEventListener("blur", () => {
+      indent(false);
+      _syncSectionMenu();
+    });
+    sectionSel.addEventListener("animationend", () => sectionSel.classList.remove("fix-section-cue"));
+    sectionSel.addEventListener("keydown", (e) => {
+      // Escape lets go of the menu; it must not reach fix mode's own
+      // handler, where a bare Escape exits the session.
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        sectionSel.blur();
+      }
+    });
+  }
+  f.sectionSel = sectionSel;
 
   const chip = document.createElement("span");
   chip.className = "fix-chip";
@@ -2594,6 +2647,7 @@ function _buildDom(contentEl, waveformsEl) {
     ? fieldset("fix-fs-score", "Pages", "Collapse / expand the page readout")
     : fieldset("fix-fs-score", "Score", "Collapse / expand the score controls");
   fsScore.body.append(pageCtl);
+  if (sectionSel) fsScore.body.append(sectionSel);
   const fsPlayback = fieldset("fix-fs-playback", "Playback", "Collapse / expand playback options");
   fsPlayback.body.append(pageOnlyRow, replayRow, speed, balance);
   const fsSnap = fieldset("fix-fs-snap", "Snap to onsets", "Collapse / expand the snap-to-onset controls");
@@ -3425,6 +3479,89 @@ function _turnPage(delta) {
 
 /** Go to a page (clamped): the transport's arrows, first / last, Home / End,
  *  and the page number field all land here. */
+/** The live MEI's sections (engine/mei-sections.js), parsed once per text. */
+let _sectionsCache = { text: null, list: [] };
+function _scoreSections() {
+  const text = getMeiXml();
+  if (_sectionsCache.text !== text) _sectionsCache = { text, list: meiSections(text) };
+  return _sectionsCache.list;
+}
+
+/** The sections with their spans in score quarters, from the timemap's
+ *  measure starts: [startQ, endQ), endQ where the measure after the section's
+ *  last begins (Infinity at the end). A measure the timemap lacks leaves the
+ *  span null. */
+function _withSectionSpans(sections) {
+  const starts = timemap
+    .filter((e) => "measureOn" in e && "qstamp" in e)
+    .sort((a, b) => a.qstamp - b.qstamp);
+  const qOf = new Map();
+  const after = new Map();
+  for (let k = 0; k < starts.length; k++) {
+    const id = starts[k].measureOn;
+    if (qOf.has(id)) continue;
+    qOf.set(id, starts[k].qstamp);
+    after.set(id, k + 1 < starts.length ? starts[k + 1].qstamp : Infinity);
+  }
+  return sections.map((s) => ({
+    ...s,
+    startQ: qOf.get(s.firstMeasureId) ?? null,
+    endQ: after.get(s.lastMeasureId) ?? null,
+  }));
+}
+
+/** Jump to a section: select its first onset and seek just before it (the
+ *  seek-to-selected-note run-up). A section whose start the timemap lacks
+ *  falls back to the page of its first measure. */
+function _gotoSection(s) {
+  const f = _fix;
+  if (!f || !s) return;
+  _commitPendingNudge();
+  const ix =
+    s.startQ === null ? -1 : f.groups.findIndex((g) => g.q >= s.startQ - GROUP_MATCH_TOL_Q);
+  if (ix !== -1) {
+    _select(ix, { seek: true });
+    f.lastSectionJump = { name: s.name, groupIx: ix, page: f.page }; // test surface
+    return;
+  }
+  let page = 0;
+  try {
+    page = tk.getPageWithElement(s.firstMeasureId);
+  } catch (_) {}
+  f.lastSectionJump = { name: s.name, groupIx: -1, page };
+  if (page > 0) _gotoPage(page);
+}
+
+/** Show, in the section menu, the innermost section holding the selected
+ *  onset — which the playback follower keeps at the playhead. Not while the
+ *  menu is in use. */
+function _syncSectionMenu() {
+  const f = _fix;
+  const sel = f?.sectionSel;
+  if (!sel || document.activeElement === sel) return;
+  const q = f.groups[f.selGroupIx]?.q;
+  let best = -1;
+  if (Number.isFinite(q)) {
+    f.sections.forEach((s, k) => {
+      if (s.startQ === null || s.endQ === null) return;
+      if (q < s.startQ - GROUP_MATCH_TOL_Q || q >= s.endQ - GROUP_MATCH_TOL_Q) return;
+      if (best === -1 || s.depth >= f.sections[best].depth) best = k;
+    });
+  }
+  const v = best === -1 ? "" : String(best);
+  if (sel.value === v) return;
+  const was = sel.value;
+  sel.value = v;
+  // A brief glow when playback (or a selection) carries into another section.
+  // Not when the menu comes back from its prompt: that change is the user's.
+  if (was !== "" && v !== "") {
+    sel.classList.remove("fix-section-cue");
+    void sel.offsetWidth; // restart the animation
+    sel.classList.add("fix-section-cue");
+    f.sectionCues = (f.sectionCues || 0) + 1; // test surface
+  }
+}
+
 function _gotoPage(page) {
   const f = _fix;
   _commitPendingNudge();
@@ -5584,6 +5721,7 @@ function _select(ix, { seek = false } = {}) {
     if (el) el.classList.add("fix-note-sel");
   }
   if (!f.scoreless) _applyUnderlaySelection();
+  _syncSectionMenu();
   if (!f.scoreless && _scoreZoom.mode !== "fit") {
     _scrollScoreToSelection();
     _updateScoreX();
@@ -9944,6 +10082,9 @@ export function fixTestState() {
       : null,
     refLanesPending: !!f.refLanesPending,
     refTicksDrawn: f.refTicksDrawn ?? 0,
+    lastSectionJump: f.lastSectionJump ?? null,
+    sectionShown: f.sectionSel ? f.sectionSel.value : null,
+    sectionCues: f.sectionCues ?? 0,
     refClickMode: _refClickMode,
     refGuide: f.refGuide ? { ...f.refGuide } : null,
     lastRefTick: f.lastRefTick ? { ...f.lastRefTick } : null,

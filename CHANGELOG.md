@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.137.0 -- Correction: go to a section of the score
+
+* Correction mode's Score controls add a "Go to section…" menu listing the MEI's sections (named by `@label`, else `@xml:id`, else the measure range; nested ones indented in the open list). Picking one selects its first note, with playback starting 0.5 s before it. The menu names the section being played, holds still while in use, and glows briefly when the section changes. Not in score-less sessions.
+* Testing: 42.42 new, 43.63 checks the menu's absence score-less; specs 42 and 43 pass (120, Chromium).
+
 ### 0.135.0 -- Correction: marker totals in the chooser
 
 * The "Correct alignment" chooser shows each row's total markers, anchored or not, before its anchor count ("2,220 markers · 2,115 anchors, 0 gaps") once the total is known: with a score after the prewarm, score-less after a first entry this load (detected plus added ticks).

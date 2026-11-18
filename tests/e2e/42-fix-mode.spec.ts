@@ -753,6 +753,112 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
   });
 
+  test('42.42 "Go to section" lists the MEI\'s sections (not a wrapper around the whole score) and jumps to a section\'s first onset, the playhead the usual run-up before it; the menu names the section being played, but holds still while in use; names are @label, else @xml:id, else the measure range', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page, REF_ROW);
+    // The fixture: one wrapper section around sections A1, B, and A2.
+    const opts = await page.$$eval('#fix-section option', (os) =>
+      os.map((o) => ({ value: (o as HTMLOptionElement).value, text: o.textContent })),
+    );
+    expect(opts).toEqual([
+      { value: '', text: 'Go to section…' },
+      { value: '0', text: 'A1' },
+      { value: '1', text: 'B' },
+      { value: '2', text: 'A2' },
+    ]);
+    expect((await fixState(page)).page).toBe(1);
+    // On entry the menu already names the section being played.
+    await expect(page.locator('#fix-section')).toHaveValue('0');
+    // B: its first onset is selected and the playhead sits the usual run-up
+    // before it; the menu then names B.
+    // (The seek needs the audition buffer.)
+    await page.waitForFunction(() => (window as any)._listenTest.fix.aud?.ready);
+    await page.selectOption('#fix-section', '1');
+    let st = await fixState(page);
+    expect(st.lastSectionJump.name).toBe('B');
+    const ixB = st.lastSectionJump.groupIx;
+    expect(ixB).toBeGreaterThan(0);
+    expect(st.selGroup).toBe(ixB);
+    expect(st.page).toBe(st.selPage);
+    expect(st.page).toBeGreaterThan(1);
+    const pos = await page.evaluate(() => (window as any)._listenTest.fixCtl.pos());
+    expect(pos).toBeCloseTo(st.selT - 0.5, 2);
+    await expect(page.locator('#fix-section')).toHaveValue('1');
+    // The onset before B's first lies in A1: the menu follows the selection
+    // (which the playback follower keeps at the playhead).
+    const cues = (await fixState(page)).sectionCues;
+    await page.keyboard.press('ArrowLeft');
+    expect((await fixState(page)).selGroup).toBe(ixB - 1);
+    await expect(page.locator('#fix-section')).toHaveValue('0');
+    // …with a brief cue that it changed.
+    expect((await fixState(page)).sectionCues).toBe(cues + 1);
+    await expect(page.locator('#fix-section')).toHaveClass(/fix-section-cue/);
+    // A2 lies further on.
+    await page.selectOption('#fix-section', '2');
+    st = await fixState(page);
+    expect(st.lastSectionJump.name).toBe('A2');
+    const ixA2 = st.lastSectionJump.groupIx;
+    expect(ixA2).toBeGreaterThan(ixB);
+    const tA2 = st.selT;
+    await expect(page.locator('#fix-section')).toHaveValue('2');
+    // In use, the menu holds still: playback from B into A2 leaves it on its
+    // prompt (so re-picking the section being played still jumps), and
+    // Escape lets go of it — without leaving the session — and it catches up.
+    await page.keyboard.press('ArrowLeft');
+    await page.focus('#fix-section');
+    await expect(page.locator('#fix-section')).toHaveValue('');
+    await page.evaluate((t) => {
+      const c = (window as any)._listenTest.fixCtl;
+      c.seek(t - 0.3);
+      c.play();
+    }, tA2);
+    await page.waitForFunction(
+      (ix) => (window as any)._listenTest.fix.selGroup >= ix,
+      ixA2,
+      { timeout: 5000 },
+    );
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await expect(page.locator('#fix-section')).toHaveValue('');
+    const cuesHeld = (await fixState(page)).sectionCues;
+    await page.press('#fix-section', 'Escape');
+    expect((await fixState(page)).active).toBe(true);
+    await expect(page.locator('#fix-section')).toHaveValue('2');
+    // Back from its prompt is the user's own change: no cue.
+    expect((await fixState(page)).sectionCues).toBe(cuesHeld);
+    // A1 goes back to the start.
+    await page.selectOption('#fix-section', '0');
+    expect((await fixState(page)).page).toBe(1);
+    // The naming rules, on small MEI documents.
+    const names = await page.evaluate(async () => {
+      const { meiSections } = await import('/static/js/engine/mei-sections.js');
+      const m = (id: string, n?: string) =>
+        `<measure xml:id="${id}"${n ? ` n="${n}"` : ''}/>`;
+      const doc = (body: string) =>
+        `<?xml version="1.0"?><mei xmlns="http://www.music-encoding.org/ns/mei"><music><body><mdiv><score>${body}</score></mdiv></body></music></mei>`;
+      return meiSections(
+        doc(
+          '<section xml:id="whole">' +
+            `<section label="Intro" xml:id="s1">${m('m1', '1')}${m('m2', '2')}</section>` +
+            `<section xml:id="s2"><section>${m('m3', '3')}${m('m4', '7')}</section>${m('m5', '8')}</section>` +
+            `<section>${m('m6', '9')}</section>` +
+            '<section xml:id="empty"/>' +
+            '</section>',
+        ),
+      );
+    });
+    expect(names).toEqual([
+      { name: 'Intro', depth: 0, firstMeasureId: 'm1', lastMeasureId: 'm2' },
+      { name: 's2', depth: 0, firstMeasureId: 'm3', lastMeasureId: 'm5' },
+      { name: 'mm. 3–7', depth: 1, firstMeasureId: 'm3', lastMeasureId: 'm4' },
+      { name: 'm. 9', depth: 0, firstMeasureId: 'm6', lastMeasureId: 'm6' },
+    ]);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+  });
+
   test('42.21 the strip WAVEFORM gets the page window on first entry, not only after a page turn', async ({
     page,
   }) => {

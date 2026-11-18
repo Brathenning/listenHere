@@ -8299,6 +8299,25 @@ body.fix-mode-open #transport .fix-only {
   padding-left: 2px;
   padding-right: 2px;
 }
+/* "Go to section…" on its own row under the page readout, as wide as it. */
+#fix-section {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 0.3em;
+  font-size: var(--font-size-small, 0.8em);
+}
+/* Playback crossed into another section: a soft glow in the selection's
+   colour that fades back to the menu's own look. */
+#fix-section.fix-section-cue {
+  animation: fix-section-cue 1.5s ease-out;
+}
+@keyframes fix-section-cue {
+  from {
+    background-color: color-mix(in srgb, var(--color-alignment-selected, #ffa500) 30%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-alignment-selected, #ffa500) 55%, transparent);
+  }
+}
 .fix-strip-ws[data-placeholder]::after {
   content: attr(data-placeholder);
   position: absolute;

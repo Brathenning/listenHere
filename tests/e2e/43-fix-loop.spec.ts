@@ -3910,6 +3910,7 @@ test.describe('43: score-less correction (B1)', () => {
     await expect(page.locator('.fix-score-scroll')).toBeHidden();
     await expect(page.locator('.fix-ref-wave')).toBeVisible();
     await expect(page.locator('#fix-score-zoom')).toHaveCount(0);
+    await expect(page.locator('#fix-section')).toHaveCount(0); // no MEI, no sections
     await expect(page.locator('#fix-fs-score legend')).toContainText('Pages');
     // The engine began without MIDI and was asked for the reference onsets once.
     const posted = await page.evaluate(() => (window as any).__fixStub.posted);
