@@ -95,6 +95,7 @@ import {
   meiSha256,
 } from "./engine/score-rebase.js";
 import { updateTransportIcons } from "./engine/transport.js";
+import { drawRuler } from "./engine/time-axis.js";
 import { alignWorkerUrl, createAlignWorker } from "./engine/align-worker-source.js";
 import { confirmDialog } from "./annotation/ui-common.js";
 import { recastAnnotationsToAlignment } from "./annotation/index.js";
@@ -2744,7 +2745,10 @@ function _buildDom(contentEl, waveformsEl) {
     refSpin.className = "fix-spin";
     refSpin.textContent = "⟳";
     refBadge.append(refSpin, " spectrogram…");
-    ref.append(refLanes, refTicks, refPlayhead, refGuide, refBadge);
+    // The reference's own time axis, in ITS seconds, along the pane's top.
+    const refRuler = document.createElement("canvas");
+    refRuler.className = "fix-ref-ruler";
+    ref.append(refLanes, refRuler, refTicks, refPlayhead, refGuide, refBadge);
     // The same handles as the strip's, between neighbouring visible lanes.
     const refLaneHandles = [0, 1].map(() => {
       const h = document.createElement("div");
@@ -2757,7 +2761,7 @@ function _buildDom(contentEl, waveformsEl) {
       return h;
     });
     score.append(ref);
-    refEls = { ref, refLanes, refWave, refSpec, refOnset, refTicks, refPlayhead, refGuide, refBadge, refLaneHandles };
+    refEls = { ref, refLanes, refRuler, refWave, refSpec, refOnset, refTicks, refPlayhead, refGuide, refBadge, refLaneHandles };
     _applyRefLaneSwitches(root, refEls);
     _applyLaneWeights(refEls, "ref");
   }
@@ -2845,6 +2849,12 @@ function _buildDom(contentEl, waveformsEl) {
     h.addEventListener("pointerdown", (e) => _onLaneHandlePointerDown(e, h));
     h.addEventListener("dblclick", () => _resetLaneWeights());
   }
+  // The time axis: a ruler along the strip's top and bottom edges, the
+  // playhead's two arrowheads between them (the user's ruling, 2026-11-11).
+  // Beneath the tick canvas, so the alignment ticks cross the top ruler on
+  // their way up to the score's connectors.
+  const rulers = document.createElement("canvas");
+  rulers.className = "fix-rulers";
   const ticks = document.createElement("canvas");
   ticks.className = "fix-ticks";
   ticks.addEventListener("mousedown", (e) => _onTickMouseDown(e));
@@ -2866,7 +2876,7 @@ function _buildDom(contentEl, waveformsEl) {
   skipNext.addEventListener("mousedown", (e) => e.preventDefault());
   skipPrev.addEventListener("click", () => _skipOnset(-1));
   skipNext.addEventListener("click", () => _skipOnset(1));
-  strip.append(lanes, ticks, playhead, handleA, handleB, skipPrev, skipNext);
+  strip.append(lanes, rulers, ticks, playhead, handleA, handleB, skipPrev, skipNext);
   // Score-less: two recordings on screen, each framed in its own colour and
   // named on a tab, so the one being aligned and its reference never blur.
   if (f.scoreless) {
@@ -2926,6 +2936,7 @@ function _buildDom(contentEl, waveformsEl) {
     laneBadge,
     laneHandles: [handleA, handleB],
     specCfg,
+    rulers,
     ticks,
     playhead,
     conn,
@@ -3621,7 +3632,75 @@ function _lanesBottomY() {
   const f = _fix;
   const h = f.els.strip.clientHeight;
   const lanesH = f.els.lanes?.clientHeight || 0;
-  return lanesH > 0 && lanesH <= h ? lanesH : h;
+  const bottom = (f.els.lanes?.offsetTop || 0) + lanesH;
+  return lanesH > 0 && bottom <= h ? bottom : h;
+}
+
+/** The rulers' band height: the lane stack starts below the top one (CSS,
+ *  `--fix-ruler-h`, is its only definition; read back off the element). */
+function _stripRulerH() {
+  return _fix?.els.lanes?.offsetTop || 0;
+}
+
+/** Score-less: where the reference pane's lanes end (below its ruler). */
+function _refLanesBottom() {
+  const L = _fix.els.refLanes;
+  return L.offsetTop + L.offsetHeight;
+}
+
+/** Paint the time axes: the strip's two rulers (in the strip recording's
+ *  seconds) and, score-less, the reference pane's own (in the reference's). */
+function _paintRulers() {
+  const f = _fix;
+  const style = getComputedStyle(document.documentElement);
+  const colors = {
+    bg: style.getPropertyValue("--color-surface-alt").trim() || undefined,
+    tick: style.getPropertyValue("--color-text-secondary").trim() || undefined,
+    text: style.getPropertyValue("--color-text").trim() || undefined,
+  };
+  const c = f.els.rulers;
+  const w = f.els.strip.clientWidth;
+  const h = f.els.strip.clientHeight;
+  if (c.width !== w) c.width = w;
+  if (c.height !== h) c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  f.rulers = null; // test surface
+  const R = _stripRulerH();
+  const t0 = _stripXToTime(0);
+  const t1 = _stripXToTime(w);
+  if (R > 0 && f.stripPps > 0 && t0 !== null) {
+    const common = { w, h: R, timeToX: (t) => _timeToStripX(t), t0, t1, pxPerSec: f.stripPps, colors };
+    const top = drawRuler(ctx, { ...common, y0: 0, edge: "top" });
+    drawRuler(ctx, { ...common, y0: h - R, edge: "bottom" });
+    f.rulers = { h: R, major: top.major, minor: top.minor, labels: top.labels };
+  }
+  const rc = f.els.refRuler;
+  if (!rc) return;
+  const rw = f.els.ref.clientWidth;
+  const rh = f.els.ref.clientHeight;
+  if (rc.width !== rw) rc.width = rw;
+  if (rc.height !== rh) rc.height = rh;
+  const rctx = rc.getContext("2d");
+  rctx.clearRect(0, 0, rw, rh);
+  f.refRuler = null;
+  const view = _refView();
+  const RR = f.els.refLanes.offsetTop;
+  if (!view || !rw || !(RR > 0) || f.els.root.classList.contains("fix-ref-off")) return;
+  const win = f.refWindow;
+  const pps = rw / Math.max(win.t1 - win.t0, 0.5);
+  const r = drawRuler(rctx, {
+    w: rw,
+    y0: 0,
+    h: RR,
+    edge: "top",
+    timeToX: (t) => view.timeToX(t),
+    t0: win.t0,
+    t1: win.t0 + rw / pps,
+    pxPerSec: pps,
+    colors,
+  });
+  f.refRuler = { h: RR, major: r.major, minor: r.minor, labels: r.labels };
 }
 
 // ---------------------------------------------------------------------------
@@ -3966,7 +4045,9 @@ function _layoutLaneHandles(f, stack = "strip") {
       return;
     }
     h.hidden = false;
-    h.style.top = `${upper[0].offsetTop + upper[0].offsetHeight}px`;
+    // The lanes' offsets are within their stack, which starts below the ruler.
+    const stackTop = (stack === "ref" ? f.els.refLanes : f.els.lanes).offsetTop;
+    h.style.top = `${stackTop + upper[0].offsetTop + upper[0].offsetHeight}px`;
     h.dataset.upper = upper[1];
     h.dataset.lower = lower[1];
   });
@@ -4322,7 +4403,7 @@ function _paintRefPane() {
   const busy = !!(f.refLanesPending && f.refLanes && !f.els.refSpec.hidden);
   f.els.refSpec.classList.toggle("fix-lane-busy", busy);
   f.els.refBadge.hidden = !busy;
-  if (busy) f.els.refBadge.style.top = `${f.els.refSpec.offsetTop + 3}px`;
+  if (busy) f.els.refBadge.style.top = `${f.els.refLanes.offsetTop + f.els.refSpec.offsetTop + 3}px`;
   const view = _refView();
   const L = f.refLanes;
   for (const [el, kind] of _visibleLanes(f, "ref")) {
@@ -4368,7 +4449,8 @@ function _paintRefTicks(f, view) {
   for (const g of f.groups) g.xScore = null;
   f.refTicksDrawn = 0; // test surface
   if (!view || !w || f.els.root.classList.contains("fix-ref-off")) return;
-  const lb = f.els.refLanes.offsetHeight; // the ticks stop where the lanes do
+  const lb = _refLanesBottom(); // the ticks stop where the lanes do
+  const lt = f.els.refLanes.offsetTop; // and start below the pane's ruler
   const rootX = c.getBoundingClientRect().x - f.els.root.getBoundingClientRect().x;
   const style = getComputedStyle(document.documentElement);
   const tickColor = style.getPropertyValue("--color-alignment").trim() || "rgb(140,90,90)";
@@ -4390,7 +4472,7 @@ function _paintRefTicks(f, view) {
       ctx.lineWidth = 5;
       ctx.strokeStyle = "#000";
       ctx.globalAlpha = 0.7;
-      ctx.moveTo(x, 0);
+      ctx.moveTo(x, lt);
       ctx.lineTo(x, lb);
       ctx.stroke();
     }
@@ -4398,18 +4480,18 @@ function _paintRefTicks(f, view) {
     ctx.lineWidth = active ? 2.5 : anchored || multi ? 2 : 1;
     ctx.strokeStyle = active ? selColor : col;
     ctx.globalAlpha = active || multi ? 0.95 : anchored ? 0.8 : 0.35;
-    ctx.moveTo(x, 0);
+    ctx.moveTo(x, lt);
     ctx.lineTo(x, lb);
     ctx.stroke();
     if (g === selGroup) {
       ctx.globalAlpha = 0.95;
       ctx.fillStyle = selColor;
-      ctx.fillRect(x - 5, 0, 10, 3);
+      ctx.fillRect(x - 5, lt, 10, 3);
     } else if (multi) {
       ctx.globalAlpha = 0.95;
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = col;
-      ctx.strokeRect(x - 4.5, 0.75, 9, 2.5);
+      ctx.strokeRect(x - 4.5, lt + 0.75, 9, 2.5);
     }
     f.refTicksDrawn++;
   }
@@ -4420,11 +4502,11 @@ function _paintRefTicks(f, view) {
     const b = Math.max(m.x0, m.x1);
     ctx.globalAlpha = 0.16;
     ctx.fillStyle = tickColor;
-    ctx.fillRect(a, 0, b - a, lb);
+    ctx.fillRect(a, lt, b - a, lb - lt);
     ctx.globalAlpha = 0.7;
     ctx.lineWidth = 1;
     ctx.strokeStyle = tickColor;
-    ctx.strokeRect(a + 0.5, 0.5, Math.max(0, b - a - 1), lb - 1);
+    ctx.strokeRect(a + 0.5, lt + 0.5, Math.max(0, b - a - 1), lb - lt - 1);
   }
   ctx.globalAlpha = 1;
 }
@@ -4621,9 +4703,9 @@ function _paintRefGuide() {
   const xs = view.timeToX(p.dupIx !== -1 ? _groupRefT(f.groups[p.dupIx]) : p.refT);
   // The full height of the pane, whatever the pointer's y: only its x means
   // anything, and a line starting at the pointer suggested otherwise.
-  const lb = f.els.refLanes.offsetHeight;
-  const y0 = 0;
-  const yK = (lb * 5) / 6;
+  const lb = _refLanesBottom();
+  const y0 = f.els.refLanes.offsetTop; // below the pane's ruler
+  const yK = y0 + ((lb - y0) * 5) / 6;
   const rgb = parseCssColor(
     getComputedStyle(document.documentElement).getPropertyValue("--color-alignment").trim(),
   ) || { r: 140, g: 90, b: 90 };
@@ -5107,6 +5189,7 @@ function _redrawOverlays() {
 
   _paintLanes();
   _paintRefPane();
+  _paintRulers();
 
   const rootRect = f.els.root.getBoundingClientRect();
   const stripRect = strip.getBoundingClientRect();
@@ -6589,12 +6672,14 @@ function _paintPlayhead() {
   if (!a?.ready) return;
   const x = _timeToStripX(_audPos());
   if (x === null || x < -PH_ARROW_HALF_W || x > w + PH_ARROW_HALF_W) return;
-  // The bracket: one arrowhead just inside the top edge pointing down, one in
-  // the gutter beneath the waveform pointing up, and nothing between them.
+  // The bracket: one arrowhead just below the top ruler pointing down, one in
+  // the gutter beneath the waveform (above the bottom ruler) pointing up, and
+  // nothing between them.
+  const R = _stripRulerH();
   ctx.fillStyle = f.playheadColor;
   ctx.globalAlpha = 0.95;
-  _fillArrowhead(ctx, x, 1, 1);
-  _fillArrowhead(ctx, x, h - 1, -1);
+  _fillArrowhead(ctx, x, R + 1, 1);
+  _fillArrowhead(ctx, x, h - R - 1, -1);
 }
 
 /**
@@ -6623,7 +6708,7 @@ function _paintRefPlayhead(t) {
     getComputedStyle(document.documentElement).getPropertyValue("--color-ref-playhead").trim() ||
     "#0d9488";
   ctx.globalAlpha = 0.95;
-  _fillArrowhead(ctx, x, 1, 1);
+  _fillArrowhead(ctx, x, f.els.refLanes.offsetTop + 1, 1); // below the pane's ruler
   _fillArrowhead(ctx, x, h - 1, -1);
 }
 
@@ -9809,6 +9894,8 @@ export function fixTestState() {
     scoreless: !!f.scoreless,
     refOnsetCount: f.refOnsets ? f.refOnsets.peaks.length : null,
     refWindow: f.refWindow ? { ...f.refWindow } : null,
+    rulers: f.rulers ? { ...f.rulers, labels: f.rulers.labels.map((l) => ({ ...l })) } : null,
+    refRuler: f.refRuler ? { ...f.refRuler, labels: f.refRuler.labels.map((l) => ({ ...l })) } : null,
     refPeakCount: f.refPeaks ? f.refPeaks.peaks.length : 0,
     refLanes: f.refLanes
       ? { melFrames: f.refLanes.melFrames, onsetFrames: f.refLanes.onsetFrames, labelsDrawn: f.refLanes.labelsDrawn }

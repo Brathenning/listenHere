@@ -7909,9 +7909,30 @@ body.fix-mode-open #transport .fix-only {
    when a lane joins. */
 .fix-lanes {
   position: absolute;
-  inset: 0 0 var(--fix-strip-gutter, 12px) 0;
+  inset: var(--fix-ruler-h, 14px) 0
+    calc(var(--fix-strip-gutter, 12px) + var(--fix-ruler-h, 14px)) 0;
   display: flex;
   flex-direction: column;
+}
+/* The time axis (0.133.0): a ruler band along the strip's top and bottom
+   edges, the playhead's arrowheads between them; score-less, one along the
+   reference pane's top. The bands come out of each pane's OWN height, like
+   the gutter, so the score pane (and the prewarm fit) never move. JS reads
+   the band back off the lane stack's offset; this is its only definition. */
+.fix-strip,
+.fix-ref {
+  --fix-ruler-h: 14px;
+}
+.fix-rulers,
+.fix-ref-ruler {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.fix-pane-tab {
+  margin-top: var(--fix-ruler-h, 0px);
 }
 .fix-strip-ws {
   position: relative;
@@ -7966,7 +7987,7 @@ body.fix-mode-open #transport .fix-only {
 }
 .fix-ref-lanes {
   position: absolute;
-  inset: 0 0 12px 0;
+  inset: var(--fix-ruler-h, 14px) 0 12px 0;
   display: flex;
   flex-direction: column;
 }

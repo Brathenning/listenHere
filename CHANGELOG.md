@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.133.0 -- Correction: time rulers
+
+* Correction mode draws a time ruler along the strip's top and bottom edges, in the recording's seconds, with the playhead between them; score-less, the reference pane has its own ruler in the reference's seconds. The step follows the zoom (labels at least 70 px apart, down to 10 ms).
+* Testing: 43.78 new; 43.30 and 43.57 follow the lanes' new place below the ruler; specs 42 and 43 pass (117, Chromium).
+
 ### 0.131.0 -- Correction: first / last page and a page field
 
 * Correction mode adds first- and last-page buttons to the blue transport bar, outermost beside the page-turn buttons, with Home and End as keys.

@@ -1497,10 +1497,15 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     const geom = await page.evaluate(() => ({
       stripH: (document.querySelector('.fix-strip') as HTMLElement).clientHeight,
       lanesH: (document.querySelector('.fix-lanes') as HTMLElement).clientHeight,
+      // The rulers' band (0.133.0): the lanes start below the top one.
+      rulerH: (document.querySelector('.fix-lanes') as HTMLElement).offsetTop,
     }));
+    const R = geom.rulerH;
+    const lanesBottom = R + geom.lanesH;
     // The gutter the lower arrowhead lives in comes out of the STRIP's own
-    // height (the score pane's must not move — it feeds the prewarm fit).
-    const gutter = geom.stripH - geom.lanesH;
+    // height (the score pane's must not move — it feeds the prewarm fit),
+    // between the lanes and the bottom ruler.
+    const gutter = geom.stripH - R - lanesBottom;
     expect(gutter).toBeGreaterThanOrEqual(8);
 
     const ph = await rows('.fix-playhead');
@@ -1511,17 +1516,19 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     // waveform is the whole point — a vertical line is the tick's shape.
     expect(top.length).toBeGreaterThan(4);
     expect(bot.length).toBeGreaterThan(4);
-    expect(Math.max(...top.map((r) => r.y))).toBeLessThan(14);
-    expect(Math.min(...bot.map((r) => r.y))).toBeGreaterThan(ph.h - 14);
-    const middle = ph.out.filter((r) => r.y >= 14 && r.y <= ph.h - 14);
+    expect(Math.max(...top.map((r) => r.y))).toBeLessThan(R + 14);
+    expect(Math.min(...bot.map((r) => r.y))).toBeGreaterThan(ph.h - R - 14);
+    const middle = ph.out.filter((r) => r.y >= R + 14 && r.y <= ph.h - R - 14);
     expect(middle).toEqual([]);
-    // The top arrowhead is INSIDE the strip (the strip's top edge is where
-    // every connector lands), and it tapers
-    // downward: base at the edge, apex pointing at the position.
-    expect(Math.min(...top.map((r) => r.y))).toBeGreaterThanOrEqual(0);
+    // Neither arrowhead is drawn over a ruler.
+    expect(ph.out.filter((r) => r.y < R || r.y >= ph.h - R)).toEqual([]);
+    // The top arrowhead is just below the top ruler (the strip's top edge is
+    // where every connector lands), and it tapers downward: base at the
+    // ruler, apex pointing at the position.
+    expect(Math.min(...top.map((r) => r.y))).toBeGreaterThanOrEqual(R);
     expect(top[0].n).toBeGreaterThan(top[top.length - 1].n);
     // The bottom one is OUTSIDE the waveform, in the gutter, tapering up.
-    expect(Math.min(...bot.map((r) => r.y))).toBeGreaterThanOrEqual(geom.lanesH);
+    expect(Math.min(...bot.map((r) => r.y))).toBeGreaterThanOrEqual(lanesBottom);
     expect(bot[bot.length - 1].n).toBeGreaterThan(bot[0].n);
     // Both apexes sit on the position, and the position is the tick's x.
     const centre = (r: { minX: number; maxX: number }) => (r.minX + r.maxX) / 2;
@@ -1531,7 +1538,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     // The ticks keep out of the gutter: it belongs to the playhead alone.
     const tk = await rows('.fix-ticks');
     expect(tk.out.length).toBeGreaterThan(0);
-    expect(Math.max(...tk.out.map((r) => r.y))).toBeLessThan(geom.lanesH);
+    expect(Math.max(...tk.out.map((r) => r.y))).toBeLessThan(lanesBottom);
   });
 
   test('43.31 a released drag snaps to the nearest detected onset; Alt while dragging, or Snap off, places it freely', async ({
@@ -3345,7 +3352,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     const ticks = (await page.locator('.fix-ticks').boundingBox())!;
     const lanes = (await page.locator('.fix-lanes').boundingBox())!;
     const x = ticks.x + st.selTickX;
-    const ySquare = ticks.y + lanes.height - 5.5; // the square's centre, in the tick canvas
+    const ySquare = lanes.y + lanes.height - 5.5; // the square's centre, at the lanes' foot
 
     await page.mouse.click(x, ticks.y + 20);
     expect((await fixState(page)).corrections.anchors, 'a click on the line').toHaveLength(1);
@@ -4366,6 +4373,100 @@ test.describe('43: score-less correction (B1)', () => {
     for (const p of (await posted()).filter((p: any) => p.type === 'fix_lanes')) {
       expect(p).toMatchObject({ hop: 256, smooth: 1 });
     }
+    expect(errors).toEqual([]);
+  });
+
+  test('43.78 time axis: rulers along the strip\'s top and bottom in the recording\'s seconds, the playhead between them; the reference pane has its own ruler in the reference\'s seconds; both follow a page turn', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await page.waitForFunction(() => (window as any)._listenTest.fix.refRuler?.labels.length > 0);
+    const check = async () => {
+      const st = await fixState(page);
+      const R = st.rulers;
+      expect(R.h).toBeGreaterThan(8);
+      expect(R.labels.length).toBeGreaterThan(2);
+      // Labels at the strip's own time→x map, a "nice" step apart, readable.
+      const pps = st.stripPps;
+      for (const l of R.labels) {
+        expect(l.text).toMatch(/^\d+:\d\d(\.\d{1,2})?$/);
+      }
+      for (let k = 1; k < R.labels.length; k++) {
+        expect(R.labels[k].t - R.labels[k - 1].t).toBeCloseTo(R.major, 9);
+        // Ticks sit on whole pixels: within 1 px of the exact spacing.
+        expect(Math.abs(R.labels[k].x - R.labels[k - 1].x - R.major * pps)).toBeLessThanOrEqual(1);
+      }
+      expect(R.major * pps).toBeGreaterThanOrEqual(70);
+      // The reference pane's ruler reads the reference's own window.
+      const RR = st.refRuler;
+      expect(RR.labels.length).toBeGreaterThan(2);
+      for (const l of RR.labels) {
+        expect(l.t).toBeGreaterThanOrEqual(st.refWindow.t0 - 1e-9);
+        expect(l.t).toBeLessThanOrEqual(st.refWindow.t1 + RR.major);
+      }
+      return st;
+    };
+    const st1 = await check();
+    // Geometry: the lanes start below the top ruler and stop above the
+    // gutter + bottom ruler; the ruler canvas is inked in both bands.
+    const geo = await page.evaluate(() => {
+      const strip = document.querySelector('.fix-strip') as HTMLElement;
+      const lanes = document.querySelector('.fix-lanes') as HTMLElement;
+      const c = document.querySelector('.fix-rulers') as HTMLCanvasElement;
+      const ctx = c.getContext('2d')!;
+      const ink = (y0: number, y1: number) => {
+        const d = ctx.getImageData(0, y0, c.width, y1 - y0).data;
+        let n = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+        return n;
+      };
+      const h = strip.clientHeight;
+      const top = lanes.offsetTop;
+      return {
+        top,
+        bottomGap: h - (lanes.offsetTop + lanes.clientHeight),
+        inkTop: ink(0, top),
+        inkBottom: ink(h - top, h),
+        inkMiddle: ink(top + 2, h - top - 14),
+      };
+    });
+    expect(geo.top).toBe(st1.rulers.h);
+    expect(geo.bottomGap).toBeGreaterThan(st1.rulers.h); // gutter + ruler
+    expect(geo.inkTop).toBeGreaterThan(100);
+    expect(geo.inkBottom).toBeGreaterThan(100);
+    expect(geo.inkMiddle).toBe(0);
+    // The reference pane's ticks start below its ruler: nothing connects
+    // above them, so the band stays the ruler's alone.
+    const refInk = await page.evaluate(() => {
+      const lanes = document.querySelector('.fix-ref-lanes') as HTMLElement;
+      const c = document.querySelector('.fix-ref-ticks') as HTMLCanvasElement;
+      const ctx = c.getContext('2d')!;
+      const ink = (y0: number, y1: number) => {
+        const d = ctx.getImageData(0, y0, c.width, y1 - y0).data;
+        let n = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+        return n;
+      };
+      const top = lanes.offsetTop;
+      return { top, band: ink(0, top), lanes: ink(top, top + lanes.clientHeight) };
+    });
+    expect(refInk.top).toBe(st1.refRuler.h);
+    expect((await fixState(page)).refTicksDrawn).toBeGreaterThan(0);
+    expect(refInk.band).toBe(0);
+    expect(refInk.lanes).toBeGreaterThan(0);
+    // A page turn moves both axes on.
+    await page.click('#skip-end');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.page === 2);
+    await page.waitForFunction(
+      (t) => (window as any)._listenTest.fix.rulers?.labels[0]?.t > t,
+      st1.rulers.labels[0].t,
+    );
+    const st2 = await check();
+    expect(st2.refRuler.labels[0].t).toBeGreaterThan(st1.refRuler.labels[0].t);
     expect(errors).toEqual([]);
   });
 });
