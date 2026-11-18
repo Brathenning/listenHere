@@ -8,8 +8,45 @@
     "each a substring replace on the English text, in order. A find that no longer matches",
     "warns (text-override-unmatched): the source is fixed, so retire that line. Fixes on targets",
     "outside the curated ten are kept, noted, and skipped, in case the curation changes.",
-    "Times, if any are ever hand-placed: { annotationId: { regionId: { 'recording.wav': {start, end} } } }."
+    "Times, if any are ever hand-placed: { annotationId: { regionId: { 'recording.wav': {start, end} } } }.",
+    "'sectionLabels' and 'sectionShort' (2026-11-17): the score sections' English names by MEI",
+    "xml:id, and a short name shared by each recurrence, as for Fledermaus (overrides.json).",
+    "DRAFTS for the user and Chanda, read off the score's own marks: 'Ballsprung' is bars",
+    "453-487, marked 'Beim Tanz Sprung' (cut when danced, 𝄌 at 452 and 488), with solos for",
+    "oboe (455), cellos (461), and horns (465, 470). Short names carry the waltz number, so",
+    "Waltz 2's strains never read as Waltz 4's coming back."
   ],
+  "sectionLabels": {
+    "Introduktion": "Introduction, slow march",
+    "Walzer1": "Waltz 1",
+    "Walzer2": "Waltz 2",
+    "Walzer2-A": "First strain",
+    "Walzer2-B": "Second strain",
+    "Walzer2-A-rend2": "First strain, repeated",
+    "Walzer2-B-rend2": "Second strain, repeated",
+    "Walzer3": "Waltz 3",
+    "Walzer4": "Waltz 4",
+    "Walzer4-Intro": "Lead-in",
+    "Walzer4-A": "First strain",
+    "Walzer4-A-ending1": "First ending",
+    "Walzer4-A-rend2": "First strain, repeated",
+    "Walzer4-A-ending2": "Second ending",
+    "Walzer4-B": "Second strain",
+    "Walzer4-B-ending2": "Second ending",
+    "Coda": "Coda",
+    "Ballsprung": "Solos for oboe, cellos, and horns (cut for dancing)",
+    "Tempo_di_Valse": "Tempo di Valse, the close"
+  },
+  "sectionShort": {
+    "Walzer2-A": "2A",
+    "Walzer2-B": "2B",
+    "Walzer2-A-rend2": "2A",
+    "Walzer2-B-rend2": "2B",
+    "Walzer4-Intro": "Lead-in",
+    "Walzer4-A": "4A",
+    "Walzer4-A-rend2": "4A",
+    "Walzer4-B": "4B"
+  },
   "texts": {
     "ann_mw0kxmyl_3": {
       "_note": "Expert / cello solo. The (?) is deliberate: the trend is not 1-to-1 by year (Chanda).",

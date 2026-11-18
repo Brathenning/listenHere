@@ -768,8 +768,8 @@ def apply_overrides(annotations, overrides, warnings, corrections=None):
     corrected = (corrections or {}).get("audio") or {}
     index = {a["id"]: a for a in annotations}
     for ann_id, regions in (overrides or {}).items():
-        if ann_id.startswith("_") or ann_id in ("reveal", "sectionLabels", "texts"):
-            continue  # a note key, the reveal list, the section labels, or text fixes — not times
+        if ann_id.startswith("_") or ann_id in ("reveal", "sectionLabels", "sectionShort", "texts"):
+            continue  # a note key, the reveal list, section labels, or text fixes — not times
         ann = index.get(ann_id)
         if ann is None:
             warnings.add("override-unknown-annotation", f"overrides name {ann_id}, which is absent")
@@ -1054,6 +1054,10 @@ def build_sections(args, sets, overrides, warnings):
     position = {mid: i for i, mid in enumerate(measure_ids)}
     ref_grid = hq["body"]["audio"][hq["header"]["ref"]]["times"]
     labels = (overrides or {}).get("sectionLabels") or {}
+    # Short shared names (2026-11-17): the SAME name on every section of a
+    # recurring theme, so a reader sees it come back; drawn where it fits.
+    # Editorial and optional — a section without one shows none.
+    shorts = (overrides or {}).get("sectionShort") or {}
 
     out, unlabelled = [], []
     for el, depth, parent in tree:
@@ -1074,6 +1078,7 @@ def build_sections(args, sets, overrides, warnings):
             "parent": parent,
             "level": depth,
             "label": label,
+            "short": lang_map(shorts.get(sid)),
             "bars": [bars[0].get("n"), bars[-1].get("n")],
             "indexPair": [closest_ix(ref_grid, start), closest_ix(ref_grid, end)],
         })

@@ -550,14 +550,15 @@ test.describe('35. Week 2 — the study panel and themes', () => {
         return T.viewports[0].strips.get(other).ws.options.waveColor;
       });
 
-    // The DEFAULT boot: parchment, applied as a token set like any other.
+    // The DEFAULT boot: salon (since 2026-11-17; parchment before), applied as
+    // a token set like any other.
     await boot(page);
     const shipped = await page.evaluate(() => ({
       inlineTokens: document.documentElement.style.length,
       bg: getComputedStyle(document.body).backgroundColor,
     }));
     expect(shipped.inlineTokens, 'the shipped palette is applied, not assumed').toBeGreaterThan(0);
-    expect(shipped.bg).toBe('rgb(234, 223, 198)'); // parchment #eadfc6
+    expect(shipped.bg).toBe('rgb(15, 31, 74)'); // salon #0f1f4a
 
     // …and DARK, which is the baseline the CSS already carries, so asking for it
     // writes nothing at all. This is the property that makes the token defaults
@@ -904,7 +905,7 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       // explorers, and the disclosure sentence at their foot, through the
       // tappable facts wearing the shimmer cue (plan §10 note of that date).
       'bandTap=shimmer',
-      'theme=parchment', // the staff ground (user, 2026-09-03)
+      'theme=salon', // the staff ground (user, 2026-11-17; parchment since 2026-09-03)
       'attractAfterIdleMs=180000', // the attract loop: a screen untouched for 3 min (user, 2026-09-07; one timer since 2026-09-16)
       'arbiter=broadcast', // two screens, one set of speakers: the loop's mirror and hand-off need it (2026-09-10)
       'room=shared', // the room machine: every window of the PC mirrors the audible one (2026-09-11)
@@ -1724,5 +1725,198 @@ test.describe('35. Demo feedback — how loudly the grouping speaks', () => {
     );
     const silent = await paint(noStory!.id);
     expect(silent.grouped, 'a bare legend stays noise, however loud the option').toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 35.30–35.32 pin the SECTION RIBBON (?ribbon, roadmap 28): an alternative
+// LOOK of the same strips, the score's sections as blocks inside WaveSurfer's
+// scrolling wrapper, so the strip's box, its tap→time mapping, and the
+// annotation regions are exactly the ones the waveform look has. The switch
+// ships on (waveform first; ruled 2026-11-17); it is per viewport, in the
+// toolbar, and ?ribbon=off removes every trace of it.
+// ---------------------------------------------------------------------------
+
+test.describe('35. Section ribbon', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  /** Per viewport: its look, the switch's pressed state, ribbon layers shown. */
+  async function looks(page: Page) {
+    return page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      return T.viewports.map((vp: any) => {
+        const strips = [...vp.strips.values()] as any[];
+        const layers = strips.map((s) => s.ws.getWrapper().querySelector('[part="ribbon"]'));
+        return {
+          strips: strips.length,
+          look: vp.el.dataset.look ?? null,
+          pressed: [...vp.el.querySelectorAll('.look-btn')].map(
+            (b: any) => `${b.dataset.look}:${b.getAttribute('aria-pressed')}`,
+          ),
+          layers: layers.filter(Boolean).length,
+          shown: layers.filter((l) => l && getComputedStyle(l).display !== 'none').length,
+          waveOpacity: getComputedStyle(
+            strips[0].ws.getWrapper().querySelector('[part="canvases"]'),
+          ).opacity,
+        };
+      });
+    });
+  }
+
+  // 35.30 The default offers the switch on the waveform look; ?ribbon=off
+  // leaves nothing of it — no layer in any strip, no switch, no look attribute.
+  test('35.30 by default the switch shows on the waveform look; ?ribbon=off leaves no trace', async ({ page }) => {
+    await boot(page);
+    for (const vp of await looks(page)) {
+      expect(vp).toMatchObject({
+        look: 'wave',
+        pressed: ['ribbon:false', 'ghost:false', 'wave:true'],
+        shown: 0,
+        waveOpacity: '1',
+      });
+      expect(vp.layers).toBe(vp.strips);
+    }
+    await boot(page, 'debug=1&ribbon=off');
+    for (const vp of await looks(page)) {
+      expect(vp).toMatchObject({ look: null, pressed: [], layers: 0, shown: 0, waveOpacity: '1' });
+    }
+  });
+
+  // 35.31 ?ribbon=switch: waveform first; the switch flips ONE viewport;
+  // blocks sit where the recording's grid puts its sections; and the strip,
+  // its regions, and its tap→time mapping are the waveform look's own.
+  test('35.31 ?ribbon=switch flips one viewport to sections, placed by the grid, with strips, regions, and taps untouched', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&ribbon=switch');
+    const start = await looks(page);
+    for (const vp of start) {
+      expect(vp.look).toBe('wave');
+      // Sections first, waveforms last (the user, 2026-11-11), the ghosted
+      // blend between (2026-11-17, offered at the default ghost strength).
+      expect(vp.pressed).toEqual(['ribbon:false', 'ghost:false', 'wave:true']);
+      expect(vp.layers).toBe(vp.strips);
+      expect(vp.shown).toBe(0);
+    }
+
+    const geometry = () =>
+      page.evaluate(() => {
+        const T = (window as any)._exhibitTest;
+        const s = [...T.viewports[0].strips.values()][0] as any;
+        const r = (el: Element) => {
+          const b = el.getBoundingClientRect();
+          return [b.x, b.y, b.width, b.height].map((v) => Math.round(v));
+        };
+        return {
+          strip: r(s.el),
+          wrapper: s.ws.getWrapper().clientWidth,
+          regions: s.regions.getRegions().map((g: any) => r(g.element)),
+        };
+      });
+    const before = await geometry();
+    expect(before.regions.length, 'fixture needs a region on the first strip').toBeGreaterThan(0);
+
+    await page.click('.vp-toolbar .look-btn[data-look="ribbon"] >> nth=0');
+    const after = await looks(page);
+    expect(after[0].look).toBe('ribbon');
+    expect(after[0].pressed).toEqual(['ribbon:true', 'ghost:false', 'wave:false']);
+    expect(after[0].shown).toBe(after[0].layers);
+    expect(after[0].waveOpacity).toBe('0');
+    // Each reader chooses their own look.
+    expect(after[1]).toEqual(start[1]);
+    expect(await geometry()).toEqual(before);
+
+    // The middle option: the same sections over the waveform at the ghost
+    // strength, the geometry still untouched.
+    await page.click('.vp-toolbar .look-btn[data-look="ghost"] >> nth=0');
+    const ghost = (await looks(page))[0];
+    expect(ghost.look).toBe('ghost');
+    expect(ghost.pressed).toEqual(['ribbon:false', 'ghost:true', 'wave:false']);
+    expect(ghost.shown).toBe(ghost.layers);
+    expect(ghost.waveOpacity).toBe('0.2');
+    expect(await geometry()).toEqual(before);
+    await page.click('.vp-toolbar .look-btn[data-look="ribbon"] >> nth=0');
+
+    // The first form section's block starts where this recording's grid puts
+    // the section's first reference index.
+    const placed = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const [file, s] = [...T.viewports[0].strips.entries()][0] as [string, any];
+      const sec = T.exhibit.sections.find((x: any) => x.level === 1);
+      const block = s.ws.getWrapper().querySelector(`[data-section="${sec.id}"]`);
+      const wrap = s.ws.getWrapper().getBoundingClientRect();
+      return {
+        x: block.getBoundingClientRect().x - wrap.x,
+        expected: (T.exhibit.grids[file][sec.indexPair[0]] / s.duration) * wrap.width,
+        pointerEvents: getComputedStyle(block.parentElement).pointerEvents,
+      };
+    });
+    expect(Math.abs(placed.x - placed.expected)).toBeLessThanOrEqual(1);
+    expect(placed.pointerEvents).toBe('none');
+
+    // A tap on a block lands on the strip beneath it, at the tapped time.
+    await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      (window as any)._taps = [];
+      const orig = T.transport.select.bind(T.transport);
+      T.transport.select = (file: string, time: number) => {
+        (window as any)._taps.push({ file, time });
+        return orig(file, time, false);
+      };
+    });
+    const target = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const [file, s] = [...T.viewports[0].strips.entries()].find(
+        ([f]: any) => f === T.transport.activeFile,
+      ) as [string, any];
+      const b = s.host.getBoundingClientRect();
+      return { file, x: b.x + b.width / 2, y: b.y + b.height / 2, half: s.duration / 2, perPx: s.duration / b.width };
+    });
+    await page.mouse.click(target.x, target.y);
+    await expect.poll(() => page.evaluate(() => (window as any)._taps.length)).toBeGreaterThan(0);
+    const tap = await page.evaluate(() => (window as any)._taps.at(-1));
+    expect(tap.file).toBe(target.file);
+    expect(Math.abs(tap.time - target.half)).toBeLessThanOrEqual(2 * target.perPx);
+  });
+
+  // 35.32 ?ribbon=first starts on sections; ?ribbonGhost=0 drops the ghosted
+  // middle option; a piece without sections (Pizzicato, aligned
+  // audio-to-audio) gets neither ribbon nor switch.
+  test('35.32 ?ribbon=first starts on sections, a zero ghost drops the middle option, and a piece without sections gets no switch', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&ribbon=first');
+    for (const vp of await looks(page)) {
+      expect(vp.look).toBe('ribbon');
+      expect(vp.pressed).toEqual(['ribbon:true', 'ghost:false', 'wave:false']);
+      expect(vp.shown).toBe(vp.layers);
+      expect(vp.waveOpacity).toBe('0');
+    }
+    await boot(page, 'debug=1&ribbon=first&ribbonGhost=0');
+    for (const vp of await looks(page)) {
+      expect(vp.pressed).toEqual(['ribbon:true', 'wave:false']);
+    }
+    await boot(page, 'debug=1&ribbon=first&piece=pizzicato');
+    expect(await page.evaluate(() => (window as any)._exhibitTest.exhibit.sections.length)).toBe(0);
+    for (const vp of await looks(page)) {
+      expect(vp).toMatchObject({ look: null, pressed: [], layers: 0, shown: 0, waveOpacity: '1' });
+    }
+  });
+
+  // 35.33 A TAPPED look survives a reload in the tab, per viewport, so the
+  // study panel's reload-per-change can trial ghost strengths without the
+  // switch being reset each time (the user, 2026-11-17); a look the new
+  // configuration no longer offers falls back to the configured one.
+  test('35.33 a tapped look survives a reload per viewport, and falls back when no longer offered', async ({ page }) => {
+    await boot(page, 'debug=1&ribbon=switch');
+    await page.click('.vp-toolbar .look-btn[data-look="ghost"] >> nth=0');
+    await boot(page, 'debug=1&ribbon=switch&ribbonGhost=0.3');
+    const kept = await looks(page);
+    expect(kept[0].look).toBe('ghost');
+    expect(kept[0].pressed).toEqual(['ribbon:false', 'ghost:true', 'wave:false']);
+    expect(kept[0].waveOpacity).toBe('0.3');
+    expect(kept[1].look).toBe('wave');
+    await boot(page, 'debug=1&ribbon=switch&ribbonGhost=0');
+    expect((await looks(page))[0].look).toBe('wave');
   });
 });

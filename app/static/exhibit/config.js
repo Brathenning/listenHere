@@ -285,7 +285,12 @@ const DEFAULTS = {
   // applied as inline overrides on :root. So the default boot now writes a
   // token set where it used to write none, which is what 35.11 checks; the
   // zero-override case moved to `?theme=dark`.
-  theme: "parchment",
+  //
+  // SALON SUCCEEDS IT on 2026-11-17 (museum feedback: parchment did not match
+  // the room; the user: "make Salon the default"). It keeps parchment's
+  // physicality — honey-wood strap, brass, velvet nap — on the room's cobalt,
+  // and keeps a paper "Did you know?" sheet. ?theme=parchment restores it.
+  theme: "salon",
   // Per-category pins on top of the preset — empty means "follow the preset".
   // Eight categories so museum-staff discussions can bikeshed one component at
   // a time and every outcome is still just a URL: ?theme=nord&themeWaves=amber.
@@ -403,6 +408,43 @@ const DEFAULTS = {
   //            a tap peels it off, a drag peels it under the finger. Peeled
   //            per (annotation, recording), until the attract loop's sweep.
   reveal: "off",
+
+  // THE SECTION RIBBON (roadmap 28; museum feedback, the user, 2026-10-20):
+  // an alternative LOOK of the same strips — the score's sections as blocks
+  // instead of the waveform — so glass, regions, zoom, and switching keep
+  // working unchanged. Only for a piece whose payload carries sections.
+  //
+  //   "off"    — waveforms only, nothing of the ribbon in the DOM.
+  //   "switch" — a waveform/ribbon switch per viewport, waveform first.
+  //   "first"  — the same switch, ribbon first.
+  // The shipped default is "switch" (the user's ruling, 2026-11-17): an
+  // exception to the opt-in A/B rule, since the waveform stays the first look.
+  ribbon: "switch",
+  // How much of the waveform shows through the switch's middle option,
+  // sections over a ghosted waveform (0–1). 0 drops that option; plain
+  // sections always hide the waveform — the ribbon is meant as the less
+  // daunting look, and a ghost may undo that.
+  ribbonGhost: 0.2,
+  // The ribbon's colouring. "hue": each form section its own colour (from the
+  // back of the theme's series). "ink": neutral paper tones and ink rules, so
+  // colour on a strip means an annotation and nothing else — the rule the
+  // waveform look already keeps (strips.js, Colours). "pastel": ink's rules
+  // with each form section's hue faded far toward the paper. The defaults
+  // below are the user's pick of 2026-11-11 (pastel, full height, 8 %).
+  ribbonTone: "pastel",
+  // "full": the blocks fill the strip, under the annotation washes as a
+  // waveform is. "partial": a 20 px band along the strip's foot — above the
+  // washes under "hue", whose full colours would otherwise hide them.
+  ribbonHeight: "full",
+  // How much of each section's hue "pastel" mixes into the paper, in percent
+  // (the playing strip gets 1.6 times as much).
+  ribbonMix: 8,
+  // Theme names INSIDE the strips (the caption above them always names the
+  // form and theme playing now). "none": form labels only, as first built —
+  // the user's lean once the caption existed (2026-11-17). "short": each
+  // recurring theme's short name where it fits. "full": those, plus the
+  // playing theme's full name in a pill on the audible strip.
+  ribbonNames: "none",
 
   // --- tap semantics (alpha-tester feedback, 2026-08-26) ---
   // What a tap on a NON-ACTIVE waveform means:

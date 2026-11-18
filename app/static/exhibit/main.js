@@ -37,7 +37,13 @@ import { TurnTaking, bandTapViewport } from "./turns.js";
 import { createArbiter } from "./arbiter.js";
 import { AudienceStore, buildAudienceSwitch } from "./audience.js";
 import { createViewportZoom } from "./zoom.js";
-import { applyTheme, annotationSeries, recolorAnnotations } from "./themes.js";
+import {
+  applyTheme,
+  annotationSeries,
+  recolorAnnotations,
+  sectionSeries,
+  washAlphas,
+} from "./themes.js";
 import { createMiddleBand } from "./middle-band.js";
 import { createAnnotationList, groupForFileIn, hasGroupStory } from "./annotation-list.js";
 // The tour (roadmap 27): the drawing is SHARED with the listen interface — a
@@ -487,9 +493,13 @@ function fitViewStrip(vp) {
   if (!heading) return;
   // The leftmost control the heading has to clear. A control standing down
   // behind the overlay (the zoom) is hidden but still holds its place, so it
-  // counts as an obstacle exactly as much as a visible one does.
+  // counts as an obstacle exactly as much as a visible one does. A control out
+  // of the flow (the look switch, display: none) has no box and reports an
+  // offsetLeft of 0, so it is skipped rather than read as a wall at the edge.
   let guard = Infinity;
-  for (const control of bar.children) guard = Math.min(guard, control.offsetLeft);
+  for (const control of bar.children) {
+    if (control.offsetParent !== null) guard = Math.min(guard, control.offsetLeft);
+  }
   if (!Number.isFinite(guard)) return;
   const range = document.createRange();
   range.selectNodeContents(heading);
@@ -589,6 +599,125 @@ function paintViewSwitch(vp) {
     b.classList.toggle("is-on", on);
     b.setAttribute("aria-pressed", on ? "true" : "false");
   }
+}
+
+/** The look switch's glyphs: blocks of sections; the waveform's bars over
+ * faint blocks — its two neighbours combined, so the middle button reads as
+ * "both" (the user's pick of three, 2026-11-17); and a waveform's bars. */
+const LOOK_GLYPHS = {
+  ghost:
+    '<svg viewBox="0 0 24 16" width="24" height="16" aria-hidden="true">' +
+    '<rect x="1" y="3" width="7" height="10" rx="1.5" fill="currentColor" opacity="0.45"/>' +
+    '<rect x="9.5" y="3" width="8.5" height="10" rx="1.5" fill="currentColor" opacity="0.45"/>' +
+    '<rect x="19.5" y="3" width="3.5" height="10" rx="1.2" fill="currentColor" opacity="0.45"/>' +
+    '<path d="M2 7v2M5 5v6M8 2v12M11 6v4M14 3v10M17 5v6M20 7v2M22.5 6v4" ' +
+    'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>',
+  wave:
+    '<svg viewBox="0 0 24 16" width="24" height="16" aria-hidden="true">' +
+    '<path d="M2 7v2M5 5v6M8 2v12M11 6v4M14 3v10M17 5v6M20 7v2M22.5 6v4" ' +
+    'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>',
+  ribbon:
+    '<svg viewBox="0 0 24 16" width="24" height="16" aria-hidden="true">' +
+    '<rect x="1" y="3" width="7" height="10" rx="1.5" fill="currentColor" opacity="0.55"/>' +
+    '<rect x="9.5" y="3" width="8.5" height="10" rx="1.5" fill="currentColor"/>' +
+    '<rect x="19.5" y="3" width="3.5" height="10" rx="1.2" fill="currentColor" opacity="0.55"/></svg>',
+};
+
+/**
+ * The waveform/ribbon switch (?ribbon, roadmap 28): glyphs and no words, the
+ * toolbar's language-neutral rule, flipping THIS viewport's look — each
+ * reader chooses their own. In the toolbar beside the audience chips (the
+ * user's pick of three mocked placements, 2026-11-17), so it travels with the
+ * toolbar when the split layout moves it down above the strips. Its middle
+ * option, sections over a ghosted waveform (the user, 2026-11-17), is offered
+ * only when ?ribbonGhost gives the ghost a strength.
+ */
+function buildLookSwitch(vp) {
+  const bar = document.createElement("div");
+  bar.className = "look-switch";
+  const buttons = new Map();
+  const paint = () => {
+    for (const [look, b] of buttons) {
+      const on = vp.el.dataset.look === look;
+      b.classList.toggle("is-on", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  };
+  // Sections first, waveforms last (the user, 2026-11-11), the blend between.
+  const looks = config.ribbonGhost > 0 ? ["ribbon", "ghost", "wave"] : ["ribbon", "wave"];
+  for (const look of looks) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "look-btn";
+    b.dataset.look = look;
+    b.setAttribute("aria-label", t("look." + look, vp.language));
+    b.innerHTML = LOOK_GLYPHS[look];
+    b.addEventListener("click", () => vp.setLook(look, { remember: true }));
+    bar.appendChild(b);
+    buttons.set(look, b);
+  }
+  // A tapped look survives a reload in this tab (the user, 2026-11-17: the
+  // study panel applies every change by reloading, and trying ghost strengths
+  // should not mean switching back each time). Per viewport, session-scoped,
+  // and forgotten by the attract sweep, so a new visitor still starts on the
+  // configured look. Storage may be unavailable; the switch works without it.
+  const key = `exhibit.look.${vp.index}`;
+  // Also the attract sweep's way back to the configured first look.
+  vp.setLook = (look, { remember = false } = {}) => {
+    vp.el.dataset.look = look;
+    try {
+      if (remember) sessionStorage.setItem(key, look);
+      else sessionStorage.removeItem(key);
+    } catch (_) {
+      /* no storage: the look simply does not outlive the page */
+    }
+    paint();
+  };
+  let kept = null;
+  try {
+    kept = sessionStorage.getItem(key);
+  } catch (_) {
+    /* as above */
+  }
+  if (kept && buttons.has(kept)) vp.el.dataset.look = kept;
+  paint();
+  return bar;
+}
+
+/**
+ * Name the form and theme playing now above the strips; empty between them.
+ * A change is marked by a quick fade (the user, 2026-11-17): the part that
+ * CHANGED fades out, is replaced, and fades in — the form stays put while the
+ * themes inside it move on. CSS transitions on a class, timed by setTimeout
+ * rather than an animation's `finished` promise, which a hidden browser pane
+ * never settles.
+ */
+const NOW_FADE_MS = 160;
+function paintNowSection(vp, { form, theme }) {
+  const el = vp.nowSectionEl;
+  if (!el) return;
+  const next = { "now-form": form, "now-theme": theme };
+  const shown = (cls) => el.querySelector(`.${cls}`)?.textContent ?? null;
+  const changed = Object.keys(next).filter((cls) => (next[cls] || null) !== shown(cls));
+  if (!changed.length) return;
+  const paint = (fadeIn) => {
+    el.replaceChildren();
+    for (const [cls, text] of Object.entries(next)) {
+      if (!text) continue;
+      const span = document.createElement("span");
+      span.className = fadeIn && changed.includes(cls) ? `${cls} is-faded` : cls;
+      span.textContent = text;
+      el.appendChild(span);
+    }
+    if (!fadeIn) return;
+    void el.offsetWidth; // commit the faded state, so removing it transitions
+    for (const span of el.querySelectorAll(".is-faded")) span.classList.remove("is-faded");
+  };
+  clearTimeout(vp.nowSectionTimer);
+  const leaving = changed.map((cls) => el.querySelector(`.${cls}`)).filter(Boolean);
+  if (!leaving.length) return paint(true);
+  for (const span of leaving) span.classList.add("is-faded");
+  vp.nowSectionTimer = setTimeout(() => paint(true), NOW_FADE_MS);
 }
 
 function buildViewSwitch(vp) {
@@ -770,6 +899,8 @@ const themeColors = applyTheme(config);
 // replaces the authored annotation/group colours at render time.
 const annotationPalette =
   config.annotationColors === "theme" ? annotationSeries(config) : null;
+// The theme's own wash strengths, or undefined for the shipped ones.
+const themeWash = washAlphas(config);
 const { viewports, bands } = buildScreen(root);
 document.title = t("app.title", config.languages[0]);
 
@@ -1247,6 +1378,14 @@ async function boot() {
     room.worker?.onMessage(() => syncGhosts());
   }
 
+  // The section ribbon (?ribbon, roadmap 28) is built only when asked for and
+  // the piece has sections, so the default leaves the strips' DOM untouched.
+  const ribbonOn = config.ribbon !== "off" && exhibit.sections.length > 0;
+  const sectionPalette = sectionSeries(config);
+  if (ribbonOn) {
+    root.style.setProperty("--ribbon-ghost", String(config.ribbonGhost));
+    root.style.setProperty("--ribbon-pastel", `${config.ribbonMix}%`);
+  }
   const stripsReady = [];
   for (const vp of viewports) {
     const mounted = mountStrips(vp.stripsEl, exhibit, config, {
@@ -1281,7 +1420,27 @@ async function boot() {
       },
       labelFor: (file) => stripLabel(exhibit, file, vp.language),
       colors: themeColors,
+      sectionColors: ribbonOn ? sectionPalette : undefined,
+      textFor: (value) => resolveText(value, { language: vp.language }),
+      onNow: (now) => paintNowSection(vp, now),
     });
+    // Where the music is, named above the strips (the user, 2026-11-17): the
+    // form and theme the audible strip reports, in the slack between the
+    // toolbar and the strips. Hung off .strips (positioned already, the box
+    // the marker layer measures in) so it moves with them and takes no space.
+    if (ribbonOn) {
+      vp.nowSectionEl = document.createElement("div");
+      vp.nowSectionEl.className = "vp-now-section";
+      vp.nowSectionEl.setAttribute("aria-live", "polite");
+      vp.stripsEl.append(vp.nowSectionEl);
+    }
+    // The strips' look (?ribbon), per viewport: each reader chooses their own.
+    if (ribbonOn) {
+      vp.el.dataset.look = config.ribbon === "first" ? "ribbon" : "wave";
+      vp.el.dataset.ribbonTone = config.ribbonTone;
+      vp.el.dataset.ribbonHeight = config.ribbonHeight;
+      vp.el.dataset.ribbonNames = config.ribbonNames;
+    }
     vp.strips = mounted.strips;
     stripsReady.push(mounted.ready);
 
@@ -1381,6 +1540,7 @@ async function boot() {
     // The buttons are optional (config.zoomControls); the controller above is
     // not — scroll sync and the setLevel API work with or without them.
     if (config.zoomControls) toolbar.append(vp.zoom.el);
+    if (ribbonOn) toolbar.append(buildLookSwitch(vp));
     // The view switch (plan §11), first on the bar: it changes what the whole
     // half shows, so it reads before the controls that belong to one view.
     if (config.viewSwitch) toolbar.prepend(buildViewSwitch(vp));
@@ -2125,6 +2285,9 @@ async function boot() {
         setPanelOpen(vp, false);
         // A new visitor finds every answer covered again.
         vp.annList?.resetReveals();
+        // …and the strips in the look the exhibit starts in (?ribbon), the
+        // remembered one forgotten.
+        vp.setLook?.(config.ribbon === "first" ? "ribbon" : "wave");
         renderAnnotations(vp, store);
       }
       if (config.marker === "glass") syncGhosts();
@@ -2435,6 +2598,7 @@ function renderAnnotations(vp, store) {
   syncRegions(vp.strips, annotations, {
     minRegionPx: config.minRegionPx,
     activeIds: paintIds,
+    alphas: themeWash,
   });
   paintGroups(vp, annotations, paintPrimary);
   paintDim(vp, annotations, paintIds);

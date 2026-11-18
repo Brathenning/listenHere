@@ -775,6 +775,26 @@ test.describe('47. The attract loop', () => {
     expect(last.time).toBeUndefined();
   });
 
+  // 47.26 The section ribbon (?ribbon): a viewport left on the other look is
+  // put back in the configured first look by the sweep, like everything else
+  // a visitor changed.
+  test('47.26 the sweep puts each viewport back in the configured first look of the strips', async ({ page }) => {
+    await boot(page, `${IDLE}&ribbon=switch`);
+    await armQuietTransport(page);
+    const lookOf = () =>
+      page.evaluate(() => (window as any)._exhibitTest.viewports.map((vp: any) => vp.el.dataset.look));
+    await page.click('.vp-toolbar .look-btn[data-look="ribbon"] >> nth=0');
+    expect(await lookOf()).toEqual(['ribbon', 'wave']);
+    await page.evaluate(() => (window as any)._exhibitTest.attract.force());
+    await expect.poll(async () => (await attract(page))?.phase).toBe('attract');
+    expect(await lookOf()).toEqual(['wave', 'wave']);
+    expect(
+      await page.locator('.look-btn[data-look="wave"][aria-pressed="true"]').count(),
+    ).toBe(2);
+    // …and forgets the tapped look, so a reload does not bring it back.
+    expect(await page.evaluate(() => sessionStorage.getItem('exhibit.look.0'))).toBeNull();
+  });
+
   // 47.21 THE ROOM MACHINE, increment 4 (minimal, agreed 2026-09-11): with the
   // worker the LEADER is the lowest screen (deterministic: screen 0, whatever
   // the tabs' ids), and the two windows' reloads in the silence are STAGGERED

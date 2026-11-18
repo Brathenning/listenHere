@@ -1,5 +1,15 @@
 # Listen Here! CHANGELOG.md
 
+### 0.130.0 -- The exhibit's section ribbon and the Salon theme
+* A three-way switch in each viewport's toolbar shows the strips as the score's sections, as sections over a faint waveform, or as waveforms; on by default, waveform first (`?ribbon=off|switch|first`). Glass, regions, zoom, and taps are unchanged.
+* The choice is kept per viewport across reloads; the attract loop's sweep resets it.
+* A caption above the strips names the current section and theme, with a short fade on change.
+* Study-panel rows: ribbon, tone, pastel strength, height, theme names, and ghost strength.
+* Section labels and shared short names for Die Fledermaus and the Kaiser-Walzer come from the overrides files (`sectionLabels`, `sectionShort`); drafts for review.
+* New Salon theme, the default (`?theme=parchment` restores parchment): cobalt velvet, brass, a honey-wood strap, washes drawn under the waveform, and a paper "Did you know?" sheet.
+* The listening tour explains the switch; behind an explorer the switch leaves the toolbar, so the heading keeps its seat.
+* Testing: 35.30–35.33, 47.26, and 50.10 pin the switch, its default, its memory, and its tour step; 46.3 and 46.8 skip controls out of the flow. Full suite on Chromium: 678 passed, 2 skipped, 0 failed (Firefox not run).
+
 ### 0.123.0 -- A Piece toggle in the study panel
 * The study panel's Misc tab starts with a Piece row (Die Fledermaus, Kaiser-Walzer, Pizzicato-Polka), which sets `?piece=` and reloads like every other row.
 * Testing: spec 35 passed 30 of 30 on Chromium; the toggle was checked in the browser, booting Kaiser-Walzer with no console errors.

@@ -76,6 +76,10 @@ const CATALOGUE = {
   // translation on a two-language surface (same rule as the middle band).
   "zoom.in": { en: "Zoom in" },
   "zoom.out": { en: "Zoom out" },
+  // The waveform/ribbon switch (?ribbon): aria-labels only, glyphs on screen.
+  "look.wave": { en: "Show waveforms" },
+  "look.ribbon": { en: "Show sections" },
+  "look.ghost": { en: "Show sections over faint waveforms" },
   "transport.play": { en: "Play" },
   "transport.pause": { en: "Pause" },
   // aria-label only: the side panel's close control shows an × glyph
@@ -282,6 +286,14 @@ const CATALOGUE = {
   },
   "tour.strap": { en: "The medallions switch recordings too, keeping your place in the music." },
   "tour.zoom": { en: "Zoom in to see the waveforms in detail, and out again." },
+  "tour.look": {
+    en: "Show the music's sections as coloured blocks instead of the waveforms, or the two together.",
+  },
+  "tour.look.kids": {
+    en: "Swap the wiggly lines for coloured blocks, one for each part of the music, or see both at once.",
+  },
+  "tour.look.two": { en: "Show the music's sections as coloured blocks instead of the waveforms." },
+  "tour.look.two.kids": { en: "Swap the wiggly lines for coloured blocks, one for each part of the music." },
   "tour.audience": { en: "Choose how much to read: written for children, for everyone, or for experts." },
   "tour.audience.kids": { en: "Choose who the notes are written for: children, everyone, or experts." },
   "tour.chips": { en: "These chips mark passages that an expert musicologist has annotated. Tap one and the music goes there." },
