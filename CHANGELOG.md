@@ -1,5 +1,49 @@
 # Listen Here! CHANGELOG.md
 
+### 0.130.0 -- The exhibit's section ribbon and the Salon theme
+* A three-way switch in each viewport's toolbar shows the strips as the score's sections, as sections over a faint waveform, or as waveforms; on by default, waveform first (`?ribbon=off|switch|first`). Glass, regions, zoom, and taps are unchanged.
+* The choice is kept per viewport across reloads; the attract loop's sweep resets it.
+* A caption above the strips names the current section and theme, with a short fade on change.
+* Study-panel rows: ribbon, tone, pastel strength, height, theme names, and ghost strength.
+* Section labels and shared short names for Die Fledermaus and the Kaiser-Walzer come from the overrides files (`sectionLabels`, `sectionShort`); drafts for review.
+* New Salon theme, the default (`?theme=parchment` restores parchment): cobalt velvet, brass, a honey-wood strap, washes drawn under the waveform, and a paper "Did you know?" sheet.
+* The listening tour explains the switch; behind an explorer the switch leaves the toolbar, so the heading keeps its seat.
+* Testing: 35.30–35.33, 47.26, and 50.10 pin the switch, its default, its memory, and its tour step; 46.3 and 46.8 skip controls out of the flow. Full suite on Chromium: 678 passed, 2 skipped, 0 failed (Firefox not run).
+
+### 0.123.0 -- A Piece toggle in the study panel
+* The study panel's Misc tab starts with a Piece row (Die Fledermaus, Kaiser-Walzer, Pizzicato-Polka), which sets `?piece=` and reloads like every other row.
+* Testing: spec 35 passed 30 of 30 on Chromium; the toggle was checked in the browser, booting Kaiser-Walzer with no console errors.
+
+### 0.122.0 -- The Kaiser-Walzer carries Chanda's nine annotations
+* The exhibit's Kaiserwalzer spine is the body Chanda authored her three sets on (reference VPO-2021, balanced preset, open ends), and the sets are prep's audience sources. Every region is a clean projection on it, so its nine index pairs are hers, without re-anchoring.
+* The score, sections, and MEI are borrowed from `alignment-fast.json` (`SOURCES["score"]`), which shares the reference grid exactly; prep asserts that. The 20 sections are unchanged.
+* The ten recordings are Chanda's choice: VPO 1987, 2003, 2016, and 2021, Karajan 1946, Böhm 1939, Das Grosse Neujahrskonzert (Rieu 2012), Kendlinger, Bernstein 1982, and Karajan 1984. Every question shows its answers.
+* A new `texts` key in the overrides file fixes annotation texts by find and replace, so the fixes survive a re-export of her sets; a find that no longer matches warns. `kaiserwalzer-overrides.json` carries her typo fixes and the three rewordings the new ten need.
+* Testing: 47.17 expects nine annotations. Specs 34–38, 45–48, and 50: 210 of 212 passed on Chromium; 38.6 and 38.8 failed on the intermittent "execution context destroyed" and spec 38 then passed alone 40 of 40. After the curation and texts, specs 34 and 47 passed 47 of 47. The Fledermaus payload rebuilds unchanged.
+
+### 0.120.0 -- Die Fledermaus on the corrected alignment: reference VPO-2022, Chanda's regions re-anchored
+* The exhibit's Fledermaus spine is `ExhibitAnnots/Alignment_Fledermaus_HQ.2026-11-10.json`: the corrected score alignment re-based onto Eulenburg 2f44c21, with the grids of the eleven recordings it lacked spliced in from `Fledermaus-all-fixed.json`. `Alignment_Fledermaus_HQ.json` is left in place for checkouts on the September table.
+* The reference is VPO-2022 (26,844 frames; was VPO-2010, 29,121), so the exhibit starts on Barenboim 2022. The wall's recording order is unchanged.
+* Chanda's three sets are re-anchored onto it (`exhibit_annots_on_hq.py --reanchor`, into `ExhibitAnnots/on-hq-2026-11-10/`) and are now prep's audience sources; `AUTHORED` names her originals. The twelve index pairs are re-voted; six are flagged for an ear check.
+* Clapping Detective cannot be placed by a pair on VPO-1989: its applause lies past the end of the VPO-2022 grid, so it shows 7:46.8–7:51.5 until a time is hand-placed.
+* The payload carries all 26 sections of the sectioned MEI.
+* Testing: 34.2 asserts grid length against the reference's own grid; 37.26 rests on a recording the data allows; 47.15 ends whatever recording a pending switch point moved the pass to. Specs 34–38, 45–48, and 50: 211 of 212 passed on Chromium, with 38.14 failing once on an intermittent "execution context destroyed" and passing alone 3 of 3.
+
+### 0.118.0 -- The exhibit payload carries the score's sections; the MEI is pinned to the alignment's commit
+* `tools/prep_exhibit_data.py` writes the MEI's `<section>` tree into the payload (`sections`): id, parent, level, bars, a label from the overrides file's `sectionLabels` or the MEI's `@label`, and an index pair on the reference grid, as regions have.
+* Bar times come from `tools/mei_measure_times.mjs`: Verovio's measure quarters mapped to reference seconds by `engine/time-map.js`. It refuses an MEI whose onset quarters differ from the alignment's score.
+* The MEI step fetches the commit a re-based alignment names (`header.rebased.ontoMei.commit`) rather than the branch, checks `header.meiSha256` when present, refetches on every run when pinned, and warns when only a branch is known. It now runs before the payload step.
+* The payload records `meiCommit` and `meiSha256`.
+* `tools/verovio_node.mjs`: Verovio loading, provenance, and the quarters check, moved out of `make_standins.mjs` and shared.
+* Testing: 41.15 passes; a payload rebuilt from the current sources matches the live one in recordings, annotations, and score.
+
+### 0.116.0 -- Answers behind a card: a quiz's per-recording notes peel off
+* `?reveal=peel`: a flagged annotation's per-recording note, its answer, lies under a "Show answer" card. A tap peels it off; a drag peels it under the finger, in either reader's half. Released short of the finish, it springs back.
+* A covered answer keeps one height whatever its length. Peeled stays peeled for that recording, and the attract loop's sweep covers every answer again.
+* Which annotations: a `reveal` list in the piece's overrides file, carried into the payload by `tools/prep_exhibit_data.py`. Four in Die Fledermaus, seven in the Pizzicato-Polka.
+* Off by default; the study panel has the switch.
+* Testing: 37.32 a tap peels a flagged note per recording, and unflagged notes stay bare; 37.33 a drag peels under the finger in both halves, and a short one springs back; 37.34 off by default.
+
 ### 0.115.2 -- Werkzeug 3.1.9
 
 * `requirements.txt`: Werkzeug 3.1.6 → 3.1.9 (GHSA-g6x2-hccm-hh4m: `safe_join` let Windows device names through, which only matters on Windows/NTFS).
@@ -9,6 +53,7 @@
 ### 0.115.1 -- Tests serve Pyodide locally
 
 * Testing: Pyodide 0.26.4 and its numpy (27 MB) are in `tests/fixtures/pyodide/`; the shared test fixture answers the worker's jsDelivr requests from there, so no spec downloads them. The app still loads Pyodide from jsDelivr.
+
 
 ### 0.115.0 -- Correction mode re-bases an alignment onto an edited score
 

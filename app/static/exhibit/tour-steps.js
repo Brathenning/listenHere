@@ -91,6 +91,16 @@ export function buildTourSteps({ vp, config, activeName }) {
     },
     { id: "strap", fragment: ["listening"], target: q(".vp-strap"), body: "tour.strap", complete: "next" },
     { id: "zoom", fragment: ["listening"], target: q(".zoom-ctl"), body: "tour.zoom", complete: "next" },
+    // The look switch (?ribbon, roadmap 28): absent under ?ribbon=off or for a
+    // piece without sections, and then the step vanishes. Its text names the
+    // middle option only where the switch offers it (?ribbonGhost=0 drops it).
+    {
+      id: "look",
+      fragment: ["listening"],
+      target: q(".look-switch"),
+      body: config.ribbonGhost > 0 ? "tour.look" : "tour.look.two",
+      complete: "next",
+    },
     {
       id: "audience",
       fragment: ["arrival", "reading"],

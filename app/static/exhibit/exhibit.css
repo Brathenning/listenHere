@@ -295,6 +295,191 @@ html, body {
 }
 .strip.is-active .strip-label { color: var(--ex-label-active); }
 
+/* The wash layer (themes.js, the strips category's OPTIONAL tokens). Unset,
+ * WaveSurfer's own order stands: the annotation washes (regions-container,
+ * z-index 5 inline, hence !important) over the waveform and its played part
+ * (progress, 2). A theme on a dark coloured ground puts the washes UNDER the
+ * strokes instead, so they can be strong enough to keep their hue (salon). */
+.strip-ws > div::part(regions-container) { z-index: var(--ex-wash-z, 5) !important; }
+.strip-ws > div::part(canvases) {
+  position: var(--ex-wave-position, static);
+  z-index: var(--ex-wave-z, auto);
+}
+.strip-ws > div::part(progress) { z-index: var(--ex-progress-z, 2); }
+
+/* The section ribbon (?ribbon, roadmap 28): blocks INSIDE WaveSurfer's shadow
+ * root (strips.js buildRibbon), reached through ::part. Form sections (l1)
+ * carry their label along the foot; their themes (l2) sit above the label
+ * line. Each block carries its form's hue as --section-color; the active
+ * strip mixes more of each hue, as its waveform does today.
+ *
+ * HEIGHT (?ribbonHeight). "full" fills the strip UNDER the annotation washes
+ * (z-index 1, below regions-container's 5), as a waveform lies under them.
+ * "partial" is a 20 px band along the foot; under ?ribbonTone=hue it goes
+ * ABOVE the washes, because full-strength hues and washes sharing one space
+ * could not be told apart (the user, 2026-11-11) — the washes then show
+ * above and below the band. The cursor is raised over either. */
+/* The NAMES (ribbon-names) are a second layer of the same geometry, always
+ * above the washes: a wash over a name would hide what it explains. */
+.strip-ws > div::part(ribbon),
+.strip-ws > div::part(ribbon-names) {
+  display: none;
+  bottom: 3px;
+  height: 20px;
+  z-index: 1;
+}
+.strip-ws > div::part(ribbon-names) { z-index: 6; }
+.vp[data-ribbon-height="full"] .strip-ws > div::part(ribbon),
+.vp[data-ribbon-height="full"] .strip-ws > div::part(ribbon-names) { bottom: 0; height: 100%; }
+.vp[data-ribbon-height="partial"][data-ribbon-tone="hue"] .strip-ws > div::part(ribbon) { z-index: 6; }
+/* "ghost" is the switch's middle option: the sections over the waveform at
+ * ?ribbonGhost strength (main.js sets --ribbon-ghost). */
+.vp:is([data-look="ribbon"], [data-look="ghost"]) .strip-ws > div::part(ribbon),
+.vp:is([data-look="ribbon"], [data-look="ghost"]) .strip-ws > div::part(ribbon-names) { display: block; }
+.vp:is([data-look="ribbon"], [data-look="ghost"]) .strip-ws > div::part(cursor) { z-index: 7; }
+.vp[data-look="ribbon"] .strip-ws > div::part(canvases),
+.vp[data-look="ribbon"] .strip-ws > div::part(progress) { opacity: 0; }
+.vp[data-look="ghost"] .strip-ws > div::part(canvases),
+.vp[data-look="ghost"] .strip-ws > div::part(progress) { opacity: var(--ribbon-ghost, 0.2); }
+.strip { --ribbon-mix: 26%; }
+.strip.is-active { --ribbon-mix: 42%; }
+.strip-ws > div::part(section) {
+  top: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  border-left: 1px solid var(--ex-surface);
+  background: color-mix(in srgb, var(--section-color) var(--ribbon-mix), var(--ex-surface));
+}
+.strip-ws > div::part(section l2) {
+  bottom: 14px;
+  background: color-mix(in srgb, var(--section-color) calc(var(--ribbon-mix) + 20%), var(--ex-surface));
+}
+.strip-ws > div::part(section l2 odd) {
+  background: color-mix(in srgb, var(--section-color) calc(var(--ribbon-mix) + 34%), var(--ex-surface));
+}
+.strip-ws > div::part(section-label) {
+  position: absolute;
+  left: 4px;
+  right: 2px;
+  bottom: 0;
+  font-size: 0.6rem;
+  line-height: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ex-label);
+}
+
+/* Theme names (strips.js buildRibbon). The SHORT name a recurring theme shares
+ * sits at its block's top-left only where it fits: each theme's name box (in
+ * the names layer, matched to the block) is a size container, and the name's
+ * width class (w1 ≤ 6 characters, w2 ≤ 10, w3
+ * longer) hides it below that class's width — a clipped "Wal" is worse than
+ * nothing. The audible strip's CURRENT theme is outlined and named in full by
+ * one pill at its edge, over its neighbours if it must. */
+.strip-ws > div::part(name-box) { top: 0; bottom: 0; }
+.strip-ws > div::part(name-box l2) { container-type: inline-size; }
+/* Three text lines share a 38 px strip without touching (measured: the
+ * conductor caption's line box ends 17 px down): the caption on top, the
+ * theme names at 16–26 px, the form labels' 12 px line along the foot. */
+.strip-ws > div::part(short) {
+  position: absolute;
+  left: 3px;
+  top: 16px;
+  font-size: 0.58rem;
+  line-height: 10px;
+  white-space: nowrap;
+  color: var(--ex-label);
+  opacity: 0.85;
+}
+@container (max-width: 38px) { .strip-ws > div::part(short w1) { display: none; } }
+@container (max-width: 56px) { .strip-ws > div::part(short w2) { display: none; } }
+@container (max-width: 72px) { .strip-ws > div::part(short w3) { display: none; } }
+/* ?ribbonNames: none hides the short names, and only full outlines the
+ * playing theme and shows its pill — and only while the music plays (the
+ * user, 2026-11-17; main.js keeps #screen[data-playing]). */
+.vp[data-ribbon-names="none"] .strip-ws > div::part(short) { display: none; }
+#screen[data-playing="true"] .vp[data-ribbon-names="full"] .strip-ws > div::part(section l2 now) {
+  box-shadow: inset 0 0 0 1px var(--ex-accent-border);
+}
+.strip-ws > div::part(now-label) {
+  display: none;
+  position: absolute;
+  top: 16px;
+  z-index: 1;
+  padding: 0 6px;
+  font-size: 0.56rem;
+  line-height: 9px;
+  white-space: nowrap;
+  color: var(--ex-text);
+  background: var(--ex-panel);
+  border: 1px solid var(--ex-accent-border);
+  border-radius: 9px;
+}
+#screen[data-playing="true"] .vp[data-ribbon-names="full"] .strip-ws > div::part(now-label shown) {
+  display: block;
+}
+
+/* Where the music is, above the strips (main.js paintNowSection): the form
+ * section, then the theme playing now, in the slack between toolbar and
+ * strips. Absolute on .strips, so it takes no space and moves with them. */
+.vp-now-section {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 12px);
+  font-size: 1.05rem;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.vp-now-section .now-form { color: var(--ex-text-soft); }
+.vp-now-section .now-theme { color: var(--ex-text); }
+/* The change fade (main.js NOW_FADE_MS, which must match): a name leaving
+ * sinks a little as it fades, its successor rises into place. */
+.vp-now-section span {
+  display: inline-block;
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+.vp-now-section span.is-faded { opacity: 0; transform: translateY(3px); }
+@media (prefers-reduced-motion: reduce) {
+  .vp-now-section span { transition: none; }
+}
+.vp-now-section .now-form + .now-theme::before {
+  content: "›";
+  margin: 0 0.5em;
+  color: var(--ex-accent-border);
+}
+
+/* ?ribbonTone=ink: no hues, so colour on a strip means an annotation and
+ * nothing else. Form sections alternate two paper tones between firm ink
+ * rules; themes are fine rules above the labels. */
+.strip { --ink-mix: 8%; --pastel-mix: var(--ribbon-pastel, 8%); }
+.strip.is-active { --ink-mix: 15%; --pastel-mix: calc(var(--ribbon-pastel, 8%) * 1.6); }
+.vp[data-ribbon-tone="ink"] .strip-ws > div::part(section l1) {
+  background: color-mix(in srgb, var(--ex-label) var(--ink-mix), var(--ex-surface));
+  border-left: 1.5px solid color-mix(in srgb, var(--ex-label) 60%, transparent);
+}
+.vp[data-ribbon-tone="ink"] .strip-ws > div::part(section l1 odd) {
+  background: color-mix(in srgb, var(--ex-label) calc(var(--ink-mix) + 8%), var(--ex-surface));
+}
+.vp[data-ribbon-tone="ink"] .strip-ws > div::part(section l2),
+.vp[data-ribbon-tone="pastel"] .strip-ws > div::part(section l2) {
+  background: none;
+  border-left: 1px solid color-mix(in srgb, var(--ex-label) 35%, transparent);
+}
+
+/* ?ribbonTone=pastel: ink's rules, with each form section's hue faded toward
+ * the paper by ?ribbonMix (main.js sets --ribbon-pastel), so the annotation
+ * washes stay the only STRONG colour on a strip while a section can still be
+ * matched across strips. */
+.vp[data-ribbon-tone="pastel"] .strip-ws > div::part(section l1) {
+  background: color-mix(in srgb, var(--section-color) var(--pastel-mix), var(--ex-surface));
+  border-left: 1.5px solid color-mix(in srgb, var(--ex-label) 60%, transparent);
+}
+
 /* The switch strap (?tapMode=direct — alpha-tester feedback, 2026-08-26; its
  * own ?strap switch since 2026-09-22). In direct mode a waveform tap is taken
  * literally on both axes, so the ALIGNED switch — the exhibit's carry-the-moment
@@ -331,7 +516,8 @@ html, body {
   left: 12px;
   width: var(--ex-strap-w, 52px);
   background: var(--ex-strap-bg, var(--ex-panel));
-  box-shadow: inset 0 0 0 1px var(--ex-border);
+  /* OPTIONAL --ex-strap-edge: a theme's bevel and lift (salon's wood). */
+  box-shadow: var(--ex-strap-edge, inset 0 0 0 1px var(--ex-border));
   border-radius: 4px;
   pointer-events: none;
   z-index: 0;
@@ -403,7 +589,8 @@ html, body {
   transform: translate(-50%, -50%);
   border-radius: 50%;
   background: var(--ex-strap-btn, var(--ex-card));
-  box-shadow: 0 1px 2px rgba(20, 10, 2, 0.35);
+  /* OPTIONAL --ex-strap-disc-shadow: how a theme sets the disc into the strap. */
+  box-shadow: var(--ex-strap-disc-shadow, 0 1px 2px rgba(20, 10, 2, 0.35));
 }
 /* The stitching runs around each medallion — a dashed thread ring just inside
  * the disc's edge, the way a sewn-on label is stitched. Two thread tokens,
@@ -453,7 +640,9 @@ html, body {
    * filter follows the alpha, which is the shape a visitor actually sees. */
   background-color: transparent;
   box-shadow: none;
-  filter: drop-shadow(0 1px 2px rgba(20, 10, 2, 0.35));
+  /* OPTIONAL --ex-strap-relief: the same shadow as a filter chain, shared
+   * with the arrows — the shapes a box-shadow cannot follow. */
+  filter: var(--ex-strap-relief, drop-shadow(0 1px 2px rgba(20, 10, 2, 0.35)));
 }
 .strap-btn.has-portrait > span { visibility: hidden; }
 /* No accent wash under a portrait. It was already invisible beneath an opaque
@@ -490,7 +679,7 @@ html, body {
    * arrow stays inside its 44px slot beside the toolbar */
   height: 42px;
   width: auto;
-  filter: drop-shadow(0 1px 2px rgba(20, 10, 2, 0.35));
+  filter: var(--ex-strap-relief, drop-shadow(0 1px 2px rgba(20, 10, 2, 0.35)));
 }
 .strap-nav-down svg { transform: rotate(180deg); }
 .strap-nav .arrow-fill { fill: var(--ex-strap-btn, var(--ex-card)); }
@@ -763,6 +952,36 @@ html, body {
   margin: 0 0 8px;
   flex: 0 0 auto;
 }
+
+/* The waveform/ribbon switch (?ribbon): one pill in the toolbar, two glyph
+ * halves, the audience chips' styling. */
+.look-switch {
+  display: flex;
+  flex: 0 0 auto;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  overflow: hidden;
+  outline: 1px dashed var(--ex-thread, transparent);
+  outline-offset: -4px;
+}
+.look-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 56px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  background: none;
+  color: var(--ex-text-body);
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.look-btn + .look-btn { border-left: 1px solid var(--ex-border-strong); }
+.look-btn.is-on { background: var(--ex-accent); color: var(--ex-on-accent); }
+.look-btn:focus-visible { outline: 2px solid var(--ex-accent-border); outline-offset: -2px; }
 
 .audience-switch {
   display: flex;
@@ -1106,6 +1325,72 @@ html, body {
   font-size: 0.86rem;
   line-height: 1.4;
   color: var(--ex-text-body);
+}
+
+/* ?reveal=peel — an answer under a peel-off card (peel.js). While covered the
+ * box has ONE height whatever the note's length (a taller card would give the
+ * answer away), and the note's block lets the turned-over flap hang past its
+ * edge rather than clipping the fold. */
+.ann-note-box { position: relative; }
+.ann-target.is-covered { overflow: visible; }
+.ann-note-box.is-covered { flex: 0 0 auto; height: 2.6rem; }
+.ann-note-box.is-covered .ann-target-note {
+  display: block;
+  height: 100%;
+  overflow: hidden;
+}
+.peel {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  cursor: grab;
+  /* A drag is a peel, never a scroll of the panel around it. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  outline-offset: 2px;
+}
+.peel.is-peeling { cursor: grabbing; }
+.peel-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  background: var(--ex-card, #fbf6ea);
+  border: 1px solid var(--ex-border-strong);
+  box-shadow: 0 1px 2px rgba(40, 25, 10, 0.18);
+}
+.peel-label {
+  font-size: 0.86rem;
+  letter-spacing: 0.04em;
+  color: var(--ex-accent);
+  pointer-events: none;
+}
+.peel-flap-wrap {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  filter: drop-shadow(-1px -1px 2px rgba(40, 25, 10, 0.35));
+}
+.peel-flap-wrap[hidden] { display: none; }
+/* The card's back: the same paper, darker away from the fold. */
+.peel-flap {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  border-radius: 3px;
+  background:
+    linear-gradient(var(--peel-shade-angle, 135deg),
+      rgba(255, 255, 255, 0.35), rgba(60, 40, 15, 0.22)),
+    var(--ex-card, #fbf6ea);
+}
+.peel-probe {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
 }
 
 .ann-detail::-webkit-scrollbar { width: 6px; }
@@ -1882,6 +2167,11 @@ html, body {
  * changing register is a thing to do INSIDE an explorer rather than a reason to
  * leave it (45.2 and 46.3 pin both halves of this). */
 .vp[data-view]:not([data-view="listen"]) .zoom-ctl { visibility: hidden; }
+/* The look switch (?ribbon) is a strips control too, but it LEAVES the flow
+ * rather than holding its place: at 170 px it is what costs the explorer's
+ * heading its seat on the toolbar's strip (fitViewStrip; 46.3 and 46.8), and
+ * the controls already re-centre as an explorer opens (reserveBack). */
+.vp[data-view]:not([data-view="listen"]) .look-switch { display: none; }
 /* The listening tour's "?" stands down behind an explorer exactly as the zoom
  * does — the explorer carries its own "?" beside Back (roadmap 27). */
 .vp[data-view]:not([data-view="listen"]) .vp-help { visibility: hidden; }

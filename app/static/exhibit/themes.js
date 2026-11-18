@@ -121,6 +121,57 @@ const PARCHMENT_LEATHER =
       "</svg>",
   );
 
+// The salon's velvet (museum feedback, 2026-11-17: the exhibit room's cobalt
+// walls and velvet curtains, dark in situ). Procedural like the parchment, by
+// the same ruling, and by the same lesson — material reads through EDGES, not
+// amplitude: a thresholded low-frequency SHEEN (pale, where the pile catches
+// the light) and CRUSH (deep, where it lies flat) as one non-repeating cover
+// image, over a fine repeating NAP tile.
+const VELVET_SHEEN =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='768' height='1024' viewBox='0 0 768 1024'>" +
+      "<filter id='s'><feTurbulence type='fractalNoise' baseFrequency='0.004 0.012' numOctaves='3' seed='5'/>" +
+      "<feColorMatrix type='matrix' values='0 0 0 0 0.55  0 0 0 0 0.66  0 0 0 0 0.95  0 0 0 1 0'/>" +
+      "<feComponentTransfer><feFuncA type='table' tableValues='0 0 0 0.03 0.09 0.16'/></feComponentTransfer></filter>" +
+      "<filter id='c'><feTurbulence type='fractalNoise' baseFrequency='0.006 0.016' numOctaves='3' seed='17'/>" +
+      "<feColorMatrix type='matrix' values='0 0 0 0 0.01  0 0 0 0 0.02  0 0 0 0 0.08  0 0 0 1 0'/>" +
+      "<feComponentTransfer><feFuncA type='table' tableValues='0 0 0 0.10 0.26 0.36'/></feComponentTransfer></filter>" +
+      "<rect width='768' height='1024' filter='url(#s)'/>" +
+      "<rect width='768' height='1024' filter='url(#c)'/>" +
+      "</svg>",
+  );
+const VELVET_NAP =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256'>" +
+      "<filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='3' stitchTiles='stitch'/>" +
+      "<feColorMatrix type='matrix' values='0 0 0 0 0.02  0 0 0 0 0.04  0 0 0 0 0.14  0 0 0 0.22 0'/></filter>" +
+      "<rect width='256' height='256' filter='url(#n)'/>" +
+      "</svg>",
+  );
+// The room's honey-wood display cases, for the strap and the attract band:
+// grain STREAKS along the strap's length (fast across, slow along), stretched
+// once over its height like the leather's blotches, and for the same reason.
+// Two layers, the paper lesson again (edges, not amplitude): broad thresholded
+// growth bands, and fine sharp figure lines over them.
+const WOOD_GRAIN =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='52' height='1024' viewBox='0 0 52 1024'>" +
+      "<filter id='w' x='0' y='0' width='100%' height='100%'>" +
+      "<feTurbulence type='fractalNoise' baseFrequency='0.16 0.004' numOctaves='3' seed='13' stitchTiles='stitch'/>" +
+      "<feColorMatrix type='matrix' values='0 0 0 0 0.22  0 0 0 0 0.10  0 0 0 0 0.02  0 0 0 1 0'/>" +
+      "<feComponentTransfer><feFuncA type='table' tableValues='0 0 0.08 0.24 0.36 0.42'/></feComponentTransfer></filter>" +
+      "<filter id='f' x='0' y='0' width='100%' height='100%'>" +
+      "<feTurbulence type='fractalNoise' baseFrequency='0.7 0.012' numOctaves='2' seed='29' stitchTiles='stitch'/>" +
+      "<feColorMatrix type='matrix' values='0 0 0 0 0.16  0 0 0 0 0.07  0 0 0 0 0.01  0 0 0 1 0'/>" +
+      "<feComponentTransfer><feFuncA type='table' tableValues='0 0 0 0 0.2 0.38'/></feComponentTransfer></filter>" +
+      "<rect width='52' height='1024' filter='url(#w)'/>" +
+      "<rect width='52' height='1024' filter='url(#f)'/>" +
+      "</svg>",
+  );
+
 export const PALETTES = {
   dark: {
     label: "Dark (default)",
@@ -526,6 +577,126 @@ export const PALETTES = {
     ],
   },
 
+  salon: {
+    label: "Salon",
+    // The exhibit room itself (museum feedback, 2026-11-17: parchment did not
+    // match it): cobalt walls and velvet curtains, dark in situ; brass curtain
+    // rods; honey-wood display cases with cream labels and sepia portraits.
+    // Parchment's PHYSICALITY carried over material by material — velvet for
+    // paper, gilt braid for stitching, honey wood for leather, a velvet drape
+    // for the cloth band — and its old-style serif kept.
+    tokens: {
+      "--ex-bg": "#0f1f4a",
+      "--ex-text": "#f1e8d4",
+      // Clean lanes, parchment's ruling: opaque under the waveforms, the
+      // velvet owning the margins.
+      "--ex-surface": "#0d1c45",
+      "--ex-surface-active": "#182f68",
+      "--ex-panel": "#132759",
+      "--ex-border": "#24397a",
+      // Control and chip edges in dull brass, like the room's fittings.
+      "--ex-border-strong": "#8f7a4c",
+      "--ex-card": "#1a3068",
+      "--ex-text-body": "#e6dcc4",
+      "--ex-text-soft": "#c2b798",
+      "--ex-text-dim": "#a0977a",
+      "--ex-text-faint": "#7f7962",
+      "--ex-label": "#ddd2b8",
+      "--ex-label-active": "#fff6e0",
+      "--ex-glow": glowFrom("#0d1c45"),
+      "--ex-accent": "#b8913f",
+      "--ex-accent-border": "#e0c27a",
+      "--ex-on-accent": "#1c1406",
+      "--ex-mark": "rgba(255,246,224,0.75)",
+      "--ex-mark-dim": "rgba(255,246,224,0.55)",
+      // The washes UNDER the waveform (and its played part), so they can be
+      // strong enough to keep their hue on cobalt without hiding the strokes
+      // — see `wash` below.
+      "--ex-wash-z": "2",
+      "--ex-wave-position": "relative",
+      "--ex-wave-z": "3",
+      "--ex-progress-z": "4",
+      "--ex-texture":
+        "radial-gradient(120% 90% at 50% 50%, rgba(0,0,0,0) 55%, rgba(3,8,26,0.5) 100%), " +
+        `url("${VELVET_SHEEN}"), url("${VELVET_NAP}")`,
+      "--ex-texture-repeat": "no-repeat, no-repeat, repeat",
+      "--ex-texture-size": "auto, cover, auto",
+      "--ex-font":
+        "'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, 'Times New Roman', serif",
+      // The strap as an oiled honey-wood rail: burnished edges, a faint
+      // sheen running its length, the grain, a deep honey base — muted so the
+      // medallions lead (the user, 2026-11-17: a lacquer shine distracted
+      // from the buttons) — bevelled (a lit left edge, a dark right one) and
+      // standing proud of the velvet, its shadow falling onto the cloth.
+      "--ex-strap-bg":
+        "linear-gradient(90deg, rgba(30,14,2,0.5), rgba(30,14,2,0) 22%, rgba(30,14,2,0) 78%, rgba(30,14,2,0.55)), " +
+        "linear-gradient(90deg, rgba(255,236,200,0) 24%, rgba(255,236,200,0.07) 34%, rgba(255,236,200,0) 46%), " +
+        `url("${WOOD_GRAIN}") center top / 100% 1024px repeat, ` +
+        "linear-gradient(180deg, #8c6234, #74502a)",
+      "--ex-strap-edge":
+        "inset 1px 0 0 rgba(255,226,170,0.3), inset -1px 0 0 rgba(30,12,0,0.6), " +
+        "inset 0 0 0 1px rgba(30,12,0,0.35), 4px 0 10px rgba(0,2,12,0.6), -2px 0 4px rgba(0,2,12,0.45)",
+      // Its buttons are the cases' cream labels, each set into the wood in a
+      // brass bezel; the portraits and arrows sit IN the wood (a dark lip
+      // above, a lit one below) rather than floating on it.
+      "--ex-strap-btn": "rgba(242,232,208,0.94)",
+      "--ex-strap-disc-shadow":
+        "0 0 0 2px #c9a24f, 0 0 0 3px rgba(40,18,2,0.65), 0 2px 4px 1px rgba(0,0,0,0.45), inset 0 1px 3px rgba(40,18,2,0.35)",
+      "--ex-strap-relief":
+        "drop-shadow(0 -1px 0 rgba(30,12,0,0.55)) drop-shadow(0 1px 0 rgba(255,226,170,0.45)) drop-shadow(0 2px 3px rgba(0,0,0,0.5))",
+      // Stitching becomes GILT BRAID: brass on velvet surfaces, dark on
+      // filled brass ones.
+      "--ex-thread": "rgba(214,182,110,0.55)",
+      "--ex-thread-accent": "rgba(40,28,6,0.45)",
+      // The glass: a cool lens, a walnut grip between brass fittings.
+      "--ex-marker-lens": "rgba(200,214,255,0.14)",
+      "--ex-marker-handle": "#4a2f16",
+      // The middle band as a velvet drape with a gilt edge.
+      "--ex-band-drape": "linear-gradient(180deg, #1d3c84, #16316f 35%, #0f2455)",
+      "--ex-band-shadow": "0 5px 14px rgba(0,4,16,0.6), 0 -5px 14px rgba(0,4,16,0.6)",
+      "--ex-band-border": "#9c8452",
+      // The attract band on the cases' honey wood, cream text.
+      "--ex-attract-bg":
+        "linear-gradient(90deg, rgba(40,20,4,0.4), rgba(40,20,4,0) 18%, rgba(40,20,4,0) 82%, rgba(40,20,4,0.4)), " +
+        "linear-gradient(180deg, #b47634, #94581f)",
+      "--ex-attract-text": "rgba(250,242,224,0.97)",
+      "--ex-attract-text-soft": "rgba(250,242,224,0.78)",
+    },
+    // At the shipped 0.34 / 0.5 the cobalt wins: gold reads olive, rose mauve.
+    wash: { alpha: 0.62, alphaActive: 0.8 },
+    // The "Did you know?" sheet stays PAPER on the velvet (the user,
+    // 2026-11-17: as on parchment, nudged to the room): the cases' ivory
+    // label stock, navy ink rather than iron-gall, brass rules. Scoped to
+    // the sheet (applyTheme), so nothing around it changes. --ex-bg is left
+    // to the room: the coil's punched holes show the card through them.
+    dyk: {
+      "--ex-dyk-paper": "#f2e9d3",
+      "--ex-text": "#1d2642",
+      "--ex-text-body": "#26304e",
+      "--ex-text-soft": "#4a5373",
+      "--ex-text-dim": "#6b7088",
+      "--ex-accent": "#9a7630",
+      "--ex-accent-border": "#8f7a4c",
+      "--ex-border-strong": "#b8a77f",
+      "--ex-surface": "#e9dec4",
+    },
+    // Pewter strokes on the resting strips, gilt cream on the audible one.
+    wave: {
+      wave: "#8590b2",
+      waveActive: "#efd9a0",
+      progress: "#5e6890",
+      progressActive: "#c9a65a",
+      cursor: "#fff3d6",
+    },
+    // Luminous on cobalt and divergence-first, with no blue (the ground is
+    // blue): gold, rose, verdigris, coral, lilac, aqua, vermilion,
+    // chartreuse, jade, pink, ochre, silver.
+    series: [
+      "#e2b75a", "#e57a8a", "#5cc49a", "#ee8a5c", "#b59be6", "#5ccbd3",
+      "#e0604f", "#b8d65a", "#3fa58a", "#f0a3c0", "#d6a24a", "#b8c0d8",
+    ],
+  },
+
   solarized: {
     label: "Solarized",
     tokens: {
@@ -645,7 +816,18 @@ export const ACCENT_EXTRAS = {
 /** Which tokens each CSS category owns — the slicing that makes mixing work. */
 const CATEGORY_SLICES = {
   canvas: ["--ex-bg", "--ex-text", "--ex-texture", "--ex-texture-repeat", "--ex-texture-size"],
-  strips: ["--ex-surface", "--ex-surface-active", "--ex-mark", "--ex-mark-dim"],
+  // The wash layer tokens are OPTIONAL: unset, the washes lie over the
+  // waveform as they always have (exhibit.css).
+  strips: [
+    "--ex-surface",
+    "--ex-surface-active",
+    "--ex-mark",
+    "--ex-mark-dim",
+    "--ex-wash-z",
+    "--ex-wave-position",
+    "--ex-wave-z",
+    "--ex-progress-z",
+  ],
   captions: ["--ex-label", "--ex-label-active", "--ex-glow"],
   text: ["--ex-text-body", "--ex-text-soft", "--ex-text-dim", "--ex-text-faint", "--ex-font"],
   // The strap and thread tokens are OPTIONAL (see the header): only parchment
@@ -661,13 +843,18 @@ const CATEGORY_SLICES = {
     "--ex-border-strong",
     "--ex-card",
     "--ex-strap-bg",
+    "--ex-strap-edge",
     "--ex-strap-btn",
+    "--ex-strap-disc-shadow",
+    "--ex-strap-relief",
     "--ex-thread",
     "--ex-thread-accent",
     "--ex-marker-lens",
     "--ex-marker-handle",
     "--ex-band-drape",
     "--ex-band-shadow",
+    // OPTIONAL: unset, the band's edge follows --ex-border (BAND_MAP).
+    "--ex-band-border",
     "--ex-attract-bg",
     "--ex-attract-text",
     "--ex-attract-text-soft",
@@ -760,6 +947,22 @@ export function applyTheme(config) {
     }
   }
 
+  // A palette's OPTIONAL `dyk` tokens restyle the "Did you know?" sheet alone
+  // (salon's paper on velvet). The sheet belongs to the controls category,
+  // like its --ex-dyk-paper, so a ?themeControls pin carries it.
+  const dyk = PALETTES[resolve("controls")]?.dyk;
+  let scoped = document.getElementById("ex-dyk-tokens");
+  if (dyk) {
+    if (!scoped) {
+      scoped = document.createElement("style");
+      scoped.id = "ex-dyk-tokens";
+      document.head.appendChild(scoped);
+    }
+    scoped.textContent = `.dyk { ${Object.entries(dyk).map(([k, v]) => `${k}: ${v};`).join(" ")} }`;
+  } else {
+    scoped?.remove();
+  }
+
   const waveName = resolve("waves");
   return WAVE_EXTRAS[waveName] || PALETTES[waveName].wave;
 }
@@ -768,6 +971,37 @@ export function applyTheme(config) {
 export function annotationSeries(config) {
   const name = PALETTES[config.theme] ? config.theme : "dark";
   return PALETTES[name].series;
+}
+
+/**
+ * The annotation washes' strengths for the theme the STRIPS follow (their
+ * category may be pinned apart from the preset), or undefined for the shipped
+ * ones (regions.js). A palette declares `wash` only when its ground is dark
+ * and coloured enough to swallow the shipped washes.
+ */
+export function washAlphas(config) {
+  const pin = config.themeStrips;
+  const name = pin && PALETTES[pin] ? pin : PALETTES[config.theme] ? config.theme : "dark";
+  return PALETTES[name].wash;
+}
+
+/**
+ * The section ribbon's colours (?ribbon): the same series from the BACK, since
+ * annotations take the front (recolorAnnotations) and a region washed in its
+ * own section's hue would vanish; greys dropped, because a grey block reads as
+ * "no section here".
+ */
+export function sectionSeries(config) {
+  return [...annotationSeries(config)].reverse().filter((c) => _saturation(c) >= 0.2);
+}
+
+/** HSL saturation of a #rrggbb colour, 0–1. */
+function _saturation(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  return max === min ? 0 : (max - min) / (1 - Math.abs(2 * l - 1));
 }
 
 /**
