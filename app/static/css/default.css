@@ -8165,6 +8165,28 @@ body.fix-mode-open #transport .fix-only {
 .fix-spec-cfg[hidden] {
   display: none;
 }
+/* The onset detector's hop and smoothing: one row, each select after its word. */
+.fix-onset-cfg {
+  display: flex;
+  align-items: center;
+  column-gap: 0.6em;
+  row-gap: 0.15em;
+  margin: 0.15em 0 0.1em 1em;
+  font-size: var(--font-size-small, 0.85em);
+}
+.fix-onset-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
+  white-space: nowrap;
+}
+.fix-onset-cfg label {
+  color: var(--color-text-secondary, #64748b);
+}
+.fix-onset-cfg select {
+  flex: 0 0 auto;
+  font-size: inherit;
+}
 /* Score-less: the Lanes box's two groups, the recording's and the reference's. */
 .fix-nav-subhead {
   margin: 0.3em 0 0.05em;

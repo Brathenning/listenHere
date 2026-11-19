@@ -196,53 +196,39 @@ const KEPT_SAMPLE_EPS_SEC = 0.001;
 const LANE_HOP = 512;
 /** The onset curve's moving-average width in frames (1 = none). */
 const ONSET_SMOOTH = 5;
-/** The onset-detector trial (opt-in, 2026-11-11): ?onsetHop=256 or 128 and
- *  ?onsetSmooth=1, 3, … set the onset curve's hop and smoothing. The shipped
- *  512 / 5 put piano onsets ~25 ms late; 256 / 1 ~1 ms, and on Fledermaus
- *  it finds 73 % of the score's onsets within 100 ms against 28 %, at 85 %
- *  precision against 97 %. Read once per page. */
-let _onsetCfgCache = null;
+/**
+ * The onset detector's settings, from the correction screen's menu (UI note
+ * 6, ruled 2026-11-11; the 0.126.0 trial's ?onsetHop / ?onsetSmooth are gone):
+ * the onset curve's hop (128 | 256 | 512) and moving-average width (odd,
+ * 1–9). The shipped 512 / 5 put piano onsets ~25 ms late; 256 / 1 ~1 ms, and
+ * on Fledermaus it finds 73 % of the score's onsets within 100 ms against
+ * 28 %, at 85 % precision against 97 %. Sticky for the page, like the
+ * spectrogram's settings; a score-less file's saved record sets it on load.
+ */
+let _onsetSettings = { hop: LANE_HOP, smooth: ONSET_SMOOTH };
+const ONSET_HOPS = [128, 256, 512];
+const ONSET_SMOOTHS = [1, 3, 5, 7, 9];
 function _onsetCfg() {
-  if (!_onsetCfgCache) {
-    const p = new URLSearchParams(window.location.search);
-    const hop = Number(p.get("onsetHop"));
-    const smooth = Number(p.get("onsetSmooth"));
-    _onsetCfgCache = {
-      hop: [128, 256, 512].includes(hop) ? hop : LANE_HOP,
-      smooth: Number.isInteger(smooth) && smooth >= 1 && smooth <= 9 && smooth % 2 ? smooth : ONSET_SMOOTH,
-    };
-  }
-  return _onsetCfgCache;
+  return _onsetSettings;
 }
-/** The detector a score-less tick set was made with, when not the shipped
- *  one: saved as header.corrections.refTickDetector, because that session's
- *  anchors find their ticks by reference time (REF_T_EPS) and another
- *  detector's ticks would leave every one of them stranded. null = the
- *  shipped LANE_HOP / ONSET_SMOOTH. */
+/** The detector a score-less session's FREE ticks were made with, when not
+ *  the shipped one: saved as header.corrections.refTickDetector so a reopened
+ *  session detects the same free ticks again. Anchored and added ticks do not
+ *  depend on it (_buildRefTickTable keeps them whatever the detector). null =
+ *  the shipped LANE_HOP / ONSET_SMOOTH. */
 let _refTickDetector = null;
 function _validDetector(d) {
-  return d && [128, 256, 512].includes(d.hop) && Number.isInteger(d.smooth) && d.smooth >= 1
+  return d && ONSET_HOPS.includes(d.hop) && ONSET_SMOOTHS.includes(d.smooth)
     ? { hop: d.hop, smooth: d.smooth }
     : null;
 }
-/** Score-less ticks: a session with saved anchors keeps the detector it was
- *  saved with, whatever the URL says; otherwise the trial's. */
+/** Score-less ticks: detected with the menu's settings, which the record of
+ *  the session being detected for then names. */
 function _refTickCfg() {
-  const saved = hasTargetAnchors(_corrections);
   const cfg = _onsetCfg();
-  if (saved) {
-    const kept = _refTickDetector || { hop: LANE_HOP, smooth: ONSET_SMOOTH };
-    if (cfg.hop !== kept.hop || cfg.smooth !== kept.smooth) {
-      console.warn(
-        `fix mode: this session's anchors were saved on ticks at hop ${kept.hop} / smooth ` +
-          `${kept.smooth}; its ticks stay there (the lanes follow the URL)`,
-      );
-    }
-    return kept;
-  }
   const shipped = cfg.hop === LANE_HOP && cfg.smooth === ONSET_SMOOTH;
   _refTickDetector = shipped ? null : { ...cfg };
-  return cfg;
+  return { ...cfg };
 }
 const LANE_N_MELS = 64;
 /** The onset curve is drawn relative to its running maximum over ±this many
@@ -724,20 +710,17 @@ function _renderChooser(card) {
  * How many alignment markers (ticks) a session would show, anchored or not,
  * or null while that is not known yet. With a score it is the onset-group
  * count, the same for step 1 and every recording, known once the prewarm (or
- * an entry) has built the groups. Score-less it is the reference's detected
- * onsets plus the ticks the user added, known once an entry this load has
- * had the worker detect them.
+ * an entry) has built the groups. Score-less it is the size of the tick
+ * table (_refTickTable: the detected onsets, the added and anchored ticks),
+ * known once an entry this load has had the worker detect them with the
+ * menu's current settings.
  */
 function _chooserTotal() {
   if (!_scoreless()) return _derived ? _derived.groups.length : null;
   const c = _refOnsetCache;
-  // _refTickCfg's choice, without its side effects (it records the trial's
-  // detector and warns): saved anchors keep theirs, else the URL's.
-  const cfg = hasTargetAnchors(_corrections)
-    ? _refTickDetector || { hop: LANE_HOP, smooth: ONSET_SMOOTH }
-    : _onsetCfg();
+  const cfg = _onsetCfg();
   if (!c || c.file !== getReferenceAudioIx() || c.cfg !== `${cfg.hop}/${cfg.smooth}`) return null;
-  return c.peaks.length + (_corrections.refTicks?.length || 0);
+  return _refTickTable(c).table.peaks.length;
 }
 
 /** An empty slot for a row's marker total, filled by _fillChooserTotals. */
@@ -1292,32 +1275,81 @@ async function _enterScoreless(f, t0) {
   _finishEntry(f);
 }
 
+/** Whether sorted `xs` holds a value within `eps` of `t`. */
+function _sortedHasNear(xs, t, eps) {
+  let lo = 0;
+  let hi = xs.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (xs[mid] < t - eps) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < xs.length && xs[lo] <= t + eps;
+}
+
 /**
- * Score-less: the tick table — the reference's detected onsets plus the ticks
- * the user added where the detector found none (header.corrections.refTicks)
- * — in time order, as index-aligned peaks/pat lists with an `added` flag. An
- * added tick has one time under both estimators: there is no detected peak
- * to take a perceived attack from.
+ * Score-less: the tick table, built from its parts (user's rulings,
+ * 2026-11-18) — KEPT ticks whatever the detector: every tick an anchor holds
+ * (any recording's, by peak or by perceived attack) and the ticks the user
+ * added where the detector found none (header.corrections.refTicks); an
+ * anchor no detected tick holds any more (the detector changed under it) is a
+ * tick of its own. Then the FREE detected ticks, less any within the
+ * detector's own minimum gap (REF_ADD_MIN_GAP_SEC) of a kept tick that is not
+ * itself detected, so a re-detection never doubles a tick. In time order, as
+ * index-aligned peaks/pat lists with an `added` flag; an added or
+ * anchor-born tick has one time under both estimators.
  */
 function _buildRefTickTable(f) {
-  const det = f.refDetected;
-  const add = _corrections.refTicks || [];
-  const n = det.peaks.length + add.length;
-  const peaks = new Float64Array(n);
-  const pat = new Float64Array(n);
-  const added = new Uint8Array(n);
-  let i = 0;
-  let j = 0;
-  for (let k = 0; k < n; k++) {
-    if (j < add.length && (i >= det.peaks.length || add[j] < det.peaks[i])) {
-      peaks[k] = pat[k] = add[j++];
-      added[k] = 1;
-    } else {
-      peaks[k] = det.peaks[i];
-      pat[k] = det.pat[i++];
-    }
+  const { table, parts } = _refTickTable(f.refDetected);
+  f.refOnsets = table;
+  f.refTickParts = parts; // test surface
+}
+
+/** The tick table for detected onsets `det` and the live correction record
+ *  (_buildRefTickTable's rules), with how it was made up. */
+function _refTickTable(det) {
+  const add = [...(_corrections.refTicks || [])].sort((a, b) => a - b);
+  const anchorTs = [];
+  for (const s of Object.values(_corrections.audio || {})) {
+    for (const a of s.anchors || []) if (Number.isFinite(a.refT)) anchorTs.push(a.refT);
   }
-  f.refOnsets = { peaks, pat, added };
+  anchorTs.sort((a, b) => a - b);
+  const peaks = Float64Array.from(det.peaks);
+  const patSorted = Float64Array.from(det.pat).sort();
+  const held = (i) =>
+    _sortedHasNear(anchorTs, det.peaks[i], REF_T_EPS) || _sortedHasNear(anchorTs, det.pat[i], REF_T_EPS);
+  // Anchors on no detected tick and no added one: ticks of their own.
+  const orphans = anchorTs.filter(
+    (t, k) =>
+      (k === 0 || t - anchorTs[k - 1] > REF_T_EPS) &&
+      !_sortedHasNear(peaks, t, REF_T_EPS) &&
+      !_sortedHasNear(patSorted, t, REF_T_EPS) &&
+      !_sortedHasNear(add, t, REF_T_EPS),
+  );
+  const own = [...add, ...orphans].sort((a, b) => a - b); // kept, not detected
+  const rows = [];
+  let dropped = 0;
+  for (let i = 0; i < det.peaks.length; i++) {
+    if (!held(i) && _sortedHasNear(own, det.peaks[i], REF_ADD_MIN_GAP_SEC - 1e-9)) {
+      dropped++;
+      continue;
+    }
+    rows.push({ peak: det.peaks[i], pat: det.pat[i], added: 0 });
+  }
+  for (const t of add) rows.push({ peak: t, pat: t, added: 1 });
+  for (const t of orphans) rows.push({ peak: t, pat: t, added: 0 });
+  rows.sort((a, b) => a.peak - b.peak);
+  const n = rows.length;
+  const out = { peaks: new Float64Array(n), pat: new Float64Array(n), added: new Uint8Array(n) };
+  rows.forEach((r, k) => {
+    out.peaks[k] = r.peak;
+    out.pat[k] = r.pat;
+    out.added[k] = r.added;
+  });
+  return {
+    table: out,
+    parts: { detected: det.peaks.length, added: add.length, anchorBorn: orphans.length, dropped },
+  };
 }
 
 /** Score-less: one group per tick, time pages, and the projection. */
@@ -1623,6 +1655,10 @@ export function fixModePrewarm() {
       _corrections = state;
       _correctionsBase = base;
       _refTickDetector = _validDetector(record.refTickDetector);
+      // A score-less session reopens on the detector its free ticks came from.
+      if (_scoreless() && (record.refTickDetector || hasTargetAnchors(state) || state.refTicks?.length)) {
+        _onsetSettings = _refTickDetector || { hop: LANE_HOP, smooth: ONSET_SMOOTH };
+      }
       _loadedCorrectionsJson = JSON.stringify({
         a: _corrections.anchors,
         g: _corrections.gaps,
@@ -2699,7 +2735,53 @@ function _buildDom(contentEl, waveformsEl) {
   const fsPlayback = fieldset("fix-fs-playback", "Playback", "Collapse / expand playback options");
   fsPlayback.body.append(pageOnlyRow, replayRow, speed, earRow, balance);
   const fsSnap = fieldset("fix-fs-snap", "Snap to onsets", "Collapse / expand the snap-to-onset controls");
-  fsSnap.body.append(snapRow, snapTargetRow);
+  // The onset detector (UI note 6): hop and smoothing of the onset curve,
+  // whose peaks are the snap targets and, score-less, the ticks. With a score
+  // the ticks are the score's, so only the lanes and the snap move.
+  const ms = (hop) => `${Math.round((hop / FIX_SR) * 1000)} ms`;
+  const onsetCfgRow = document.createElement("span");
+  onsetCfgRow.className = "fix-onset-cfg";
+  const word = (text, forId, title) => {
+    const l = document.createElement("label");
+    l.htmlFor = forId;
+    l.textContent = text;
+    l.title = title;
+    return l;
+  };
+  const hopTitle = "Onset detector: the onset curve's hop — smaller finds onsets earlier and closer together";
+  const smoothTitle =
+    "Onset detector: the onset curve's smoothing, a moving average over this many frames (off = none)";
+  // Each word with its select, unbreakable: in a narrow column the row wraps
+  // between the pairs, never inside one.
+  const pair = (...els) => {
+    const p = document.createElement("span");
+    p.className = "fix-onset-pair";
+    p.append(...els);
+    return p;
+  };
+  onsetCfgRow.append(
+    pair(
+      word("hop", "fix-onset-hop", hopTitle),
+      mkSelect(
+        "fix-onset-hop",
+        hopTitle,
+        ONSET_HOPS.map((h) => [h, ms(h)]),
+        _onsetSettings.hop,
+        (v) => _setOnsetCfg({ hop: Number(v) }),
+      ),
+    ),
+    pair(
+      word("smooth", "fix-onset-smooth", smoothTitle),
+      mkSelect(
+        "fix-onset-smooth",
+        smoothTitle,
+        ONSET_SMOOTHS.map((k) => [k, k === 1 ? "off" : String(k)]),
+        _onsetSettings.smooth,
+        (v) => _setOnsetCfg({ smooth: Number(v) }),
+      ),
+    ),
+  );
+  fsSnap.body.append(snapRow, snapTargetRow, onsetCfgRow);
   const fsLanes = fieldset("fix-fs-lanes", "Lanes", "Collapse / expand the strip's lanes");
   if (f.scoreless) {
     // Two panes, two sets of switches: the recording's (the strip, whose
@@ -4031,6 +4113,39 @@ function _setSpecCfg(patch) {
   }
 }
 
+/**
+ * An onset-detector change from the menu: sticky; the onset lanes (and with
+ * them the snap targets) are recomputed, the spectrogram kept. Score-less the
+ * ticks follow: the free ones are detected again, the anchored and added ones
+ * stay (_buildRefTickTable).
+ */
+function _setOnsetCfg(patch) {
+  _onsetSettings = { ..._onsetSettings, ...patch };
+  const f = _fix;
+  if (!f?.engineReady) return; // the entry's own requests carry the new settings
+  _requestLanes(f, "onset");
+  if (!f.scoreless || !f.refOnsets) return;
+  const cfg = _refTickCfg();
+  const key = `${cfg.hop}/${cfg.smooth}`;
+  _syncCorrectionsHeader(); // a save records the new detector
+  if (_refOnsetCache?.file === f.refFile && _refOnsetCache.cfg === key) {
+    f.refDetected = { peaks: _refOnsetCache.peaks, pat: _refOnsetCache.pat };
+    _rederiveRefTicks(f);
+  } else {
+    f.refRederive = key;
+    _ensureWorker().postMessage({ type: "fix_ref_onsets", ...cfg });
+  }
+}
+
+/** Score-less, after a new detection: the tick table again, the selection
+ *  kept on (or nearest to) the onset it was on. */
+function _rederiveRefTicks(f) {
+  const sel = f.groups[f.selGroupIx];
+  const refT = sel ? _groupRefT(sel) : 0;
+  _rebuildScorelessTicks(f, refT);
+  f.rederived = (f.rederived || 0) + 1; // test surface
+}
+
 /** The spectrogram's hop from its FFT size and overlap. */
 function _melHop() {
   return Math.max(64, Math.round(_specCfg.nFft * (1 - _specCfg.overlap)));
@@ -4459,10 +4574,14 @@ function _installLanes(f, d) {
   if (d.what === "mel" && f[slot]) {
     // A configuration change: the onset lane and its peaks are kept.
     f[slot] = { ...f[slot], ...melPart };
+  } else if (d.what === "onset" && !f[slot]) {
+    // An onset-only reply with no lanes to merge into (a full request that
+    // failed or is still on its way carries the onset lane too): nothing to do.
   } else {
     const onset = d.onset || new Float32Array(0);
     f[slot] = {
-      ...melPart,
+      // An onset-detector change: the spectrogram is kept.
+      ...(d.what === "onset" ? f[slot] : melPart),
       onsetHop: d.onset_hop,
       onsetSmooth: d.onset_smooth,
       onsetFrames: d.onset_frames ?? onset.length,
@@ -10122,10 +10241,20 @@ async function _bootstrap() {
       );
     } else if (d.type === "fix_ref_onsets") {
       // Score-less: the reference's detected onsets — the session's ticks.
-      f.refDetected = { peaks: Float64Array.from(d.peaks), pat: Float64Array.from(d.pat) };
+      const detected = { peaks: Float64Array.from(d.peaks), pat: Float64Array.from(d.pat) };
       const cfg = `${d.hop ?? LANE_HOP}/${d.smooth ?? ONSET_SMOOTH}`;
-      _refOnsetCache = { file: f.refFile, cfg, ...f.refDetected };
-      f.refOnsetsWait?.resolve();
+      _refOnsetCache = { file: f.refFile, cfg, ...detected };
+      if (f.refOnsets) {
+        // A live re-detection from the menu: only the one asked for last.
+        if (f.refRederive === cfg) {
+          f.refRederive = null;
+          f.refDetected = detected;
+          _rederiveRefTicks(f);
+        }
+      } else {
+        f.refDetected = detected;
+        f.refOnsetsWait?.resolve();
+      }
     } else if (d.type === "fix_ref_onsets_error") {
       f.refOnsetsWait?.reject(new Error(d.message));
     } else if (d.type === "fix_ready" && f.scoreless) {
@@ -10362,6 +10491,10 @@ export function fixTestState() {
     }),
     scoreless: !!f.scoreless,
     refOnsetCount: f.refOnsets ? f.refOnsets.peaks.length : null,
+    onsetCfg: { ..._onsetSettings },
+    refTickParts: f.refTickParts ? { ...f.refTickParts } : null,
+    rederived: f.rederived ?? 0,
+    addedRefTickCount: f.refOnsets ? f.refOnsets.added.reduce((n, v) => n + v, 0) : null,
     refWindow: f.refWindow ? { ...f.refWindow } : null,
     rulers: f.rulers ? { ...f.rulers, labels: f.rulers.labels.map((l) => ({ ...l })) } : null,
     refRuler: f.refRuler ? { ...f.refRuler, labels: f.refRuler.labels.map((l) => ({ ...l })) } : null,

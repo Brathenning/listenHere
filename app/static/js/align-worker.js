@@ -1994,8 +1994,9 @@ def perceptual_attack_times(audio, peaks, hop):
 
 def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, what='all', scale='mel', which='ref', smooth=None):
     """The v2 lanes for the current correction session: the band spectrogram
-    (user-configurable FFT size, window, hop, bands, frequency scale) and —
-    unless what == 'mel', a configuration change — the fine-hop onset curve of
+    (user-configurable FFT size, window, hop, bands, frequency scale) — unless
+    what == 'onset', an onset-detector change — and, unless what == 'mel', a
+    spectrogram configuration change, the fine-hop onset curve of
     the resident audio with its picked peaks and their perceived attack times
     (the two snap-to-onset target lists). which = 'ref' | 'target' picks the
     audio on the strip: the reference, or the audio-to-audio TARGET
@@ -2016,13 +2017,13 @@ def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, wh
     mel_hop = onset_hop if mel_hop is None else int(mel_hop)
     window = window if window in LANE_WINDOWS else 'hann'
     scale = scale if scale in LANE_SCALES else 'mel'
-    mel = compute_mel_spectrogram(ref, n_fft, mel_hop, n_mels, window, scale)
+    mel = None if what == 'onset' else compute_mel_spectrogram(ref, n_fft, mel_hop, n_mels, window, scale)
     out = {
         'sr': SR, 'what': what, 'which': which, 'window': window, 'n_fft': n_fft, 'n_mels': n_mels,
         'scale': scale,
         'band_hz': [float(c) for c in _band_centres(scale, n_mels, LANE_FMIN, SR / 2.0)],
-        'mel_hop': mel_hop, 'mel_frames': int(mel.shape[1]), 'mel_t0': n_fft / 2.0 / SR,
-        'mel': np.ascontiguousarray(mel),
+        'mel_hop': mel_hop, 'mel_frames': 0 if mel is None else int(mel.shape[1]), 'mel_t0': n_fft / 2.0 / SR,
+        'mel': None if mel is None else np.ascontiguousarray(mel),
         'onset_hop': onset_hop, 'onset_smooth': smooth, 'onset_t0': ONSET_N_FFT / 2.0 / SR,
         'onset_frames': 0, 'onset': None, 'peaks': None, 'pat': None,
     }
@@ -2094,13 +2095,14 @@ _lanes_onset = _lanes.pop('onset')
 json.dumps(_lanes)
 `);
     const meta = JSON.parse(metaJson);
-    const mel = takeBuffer(pyodide, "_lanes_mel", "u8", Uint8Array);
+    const mel = meta.what === "onset" ? null : takeBuffer(pyodide, "_lanes_mel", "u8", Uint8Array);
     const onset =
       meta.what === "mel"
         ? null
         : takeBuffer(pyodide, "_lanes_onset", "f32", Float32Array);
     await pyodide.runPythonAsync("del _lanes, _lanes_mel, _lanes_onset");
-    const transfer = [mel.buffer];
+    const transfer = [];
+    if (mel) transfer.push(mel.buffer);
     if (onset) transfer.push(onset.buffer);
     self.postMessage({ type: "fix_lanes", ...meta, mel, onset }, transfer);
   } catch (err) {
@@ -2170,8 +2172,10 @@ async function initPyodide() {
  *                                         slackSec?, maxFrames? }
  *   worker → main: "fix_target_segment" { result: { times, hop } }
  *   main → worker: "fix_target_dispose"   →   worker → main: "fix_target_disposed"
- *   "fix_lanes" takes which: "ref" | "target" for the audio on the strip, and
- *   smooth: the onset curve's moving-average width (frames; default 5).
+ *   "fix_lanes" takes which: "ref" | "target" for the audio on the strip,
+ *   smooth: the onset curve's moving-average width (frames; default 5), and
+ *   what: "all" | "mel" (the spectrogram alone) | "onset" (the onset curve and
+ *   its peaks alone; the reply's mel is null).
  *
  *   Score-less sessions: "fix_begin" with meiMidi null holds the reference
  *   alone (fix_ready's events: { n_events: 0, ref_duration }); the tick set is

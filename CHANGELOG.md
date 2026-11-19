@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.141.0 -- Correction: the onset detector in a menu
+
+* Correction mode's Snap controls set the onset detector's hop (6, 12, or 23 ms) and smoothing (off, 3–9); the `?onsetHop` / `?onsetSmooth` URL parameters of 0.126.0 are gone. Only the onset lanes are recomputed. With a score this moves the lanes and the snap targets; score-less it also re-detects the unanchored ticks, keeping anchored and added ones and dropping a re-detected tick within 50 ms of a kept one. A saved session records the detector and reopens on it, rebuilding anchored ticks a detector no longer finds; the chooser's marker total counts the same table.
+* Testing: 43.73 rewritten for the menu, 43.82 new; specs 41, 42, and 43 pass (142, Chromium); a live run on Fledermaus recomputes the onset lane alone in 0.3 s.
+
 ### 0.139.0 -- Correction: clicks on the ticks
 
 * Correction mode's Playback controls choose what the audition plays beside the recording: the synth (score-less, the reference) as before, or clicks. Clicks puts a synthesized cowbell (after Gordon Reid, Sound On Sound, September 2002) on every tick where it stands now, following each edit, with the recording in both ears; the balance slider then mixes the recording against the clicks. In all three modes.

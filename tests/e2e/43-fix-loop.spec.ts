@@ -69,10 +69,11 @@ async function installWorkerStub(
     /** Answer fix_lanes at once with synthetic lanes carrying these onset
      *  peaks (perceived attacks = peaks + patShift); without it the test
      *  calls __fixStub.sendLanes(peaks, opts) itself. */
-    lanes?: { peaks: number[]; patShift?: number };
+    lanes?: { peaks: number[]; patShift?: number; byHop?: Record<number, number[]> };
     /** Score-less sessions: answer fix_ref_onsets with these reference onsets
-     *  (perceived attacks = peaks + patShift, default −0.03). */
-    refOnsets?: { peaks: number[]; patShift?: number };
+     *  (perceived attacks = peaks + patShift, default −0.03); `byHop` gives
+     *  other onsets for another detector hop (the onset menu). */
+    refOnsets?: { peaks: number[]; patShift?: number; byHop?: Record<number, number[]> };
     /** Answer fix_target_realign after this many ms (default 5), so the
      *  in-flight commit can be observed. */
     targetRealignDelayMs?: number;
@@ -93,7 +94,7 @@ async function installWorkerStub(
       // a spike per given peak, and a perceived-attack time per peak.
       w.sendLanes = (peaks: number[], opts: any = {}) => {
         const sr = 22050;
-        const onsetHop = 512;
+        const onsetHop = opts.hop ?? 512;
         const melHop = opts.melHop ?? 512;
         const nMels = opts.nMels ?? 64;
         const nFft = opts.nFft ?? 2048;
@@ -101,8 +102,8 @@ async function installWorkerStub(
         const dur = 200;
         const melFrames = Math.floor((dur * sr) / melHop);
         const onsetFrames = Math.floor((dur * sr) / onsetHop);
-        const mel = new Uint8Array(nMels * melFrames);
-        for (let m = 0; m < nMels; m++) {
+        const mel = what === 'onset' ? null : new Uint8Array(nMels * melFrames);
+        for (let m = 0; mel && m < nMels; m++) {
           for (let i = 0; i < melFrames; i++) mel[m * melFrames + i] = (i * 3 + m * 4) & 255;
         }
         const onsetT0 = 1024 / 2 / sr;
@@ -132,6 +133,7 @@ async function installWorkerStub(
             mel_t0: nFft / 2 / sr,
             mel,
             onset_hop: onsetHop,
+            onset_smooth: opts.smooth ?? 5,
             onset_frames: onsetFrames,
             onset_t0: onsetT0,
             onset,
@@ -217,7 +219,9 @@ async function installWorkerStub(
           if (o.lanes) {
             setTimeout(
               () =>
-                w.sendLanes(o.lanes!.peaks ?? [], {
+                w.sendLanes(o.lanes!.byHop?.[msg.hop] ?? o.lanes!.peaks ?? [], {
+                  hop: msg.hop,
+                  smooth: msg.smooth,
                   nFft: msg.nFft,
                   window: msg.window,
                   melHop: msg.melHop,
@@ -243,12 +247,18 @@ async function installWorkerStub(
           if (o.deferReady) w.releaseReady = sendReady;
           else setTimeout(sendReady, 5);
         } else if (msg.type === 'fix_ref_onsets') {
-          const peaks = o.refOnsets?.peaks ?? [];
+          const peaks = o.refOnsets?.byHop?.[msg.hop] ?? o.refOnsets?.peaks ?? [];
           const shift = o.refOnsets?.patShift ?? -0.03;
           setTimeout(
             () =>
               w.onmessage?.({
-                data: { type: 'fix_ref_onsets', hop: 512, peaks, pat: peaks.map((t) => t + shift) },
+                data: {
+                  type: 'fix_ref_onsets',
+                  hop: msg.hop ?? 512,
+                  smooth: msg.smooth ?? 5,
+                  peaks,
+                  pat: peaks.map((t) => t + shift),
+                },
               }),
             5,
           );
@@ -1307,6 +1317,29 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await expect(page.locator('.fix-balance input[type="range"]')).toHaveValue('100');
     await page.click('#fix-ear-synth'); // leave the module state as the other tests expect
     await page.locator('.fix-balance input[type="range"]').fill('0');
+  });
+
+  test('43.82 with a score the onset menu moves only the lanes and the snap targets: the onset lane is recomputed at the new hop, the spectrogram kept, and the tick set stays the score\'s', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page, { lanes: { peaks: [3.0, 3.5], byHop: { 128: [3.02, 3.52, 4.0] } } });
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 2);
+    const before = await fixState(page);
+    await page.selectOption('#fix-onset-hop', '128');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 3);
+    const st = await fixState(page);
+    expect(st.lanes.hop).toBe(128);
+    expect(st.lanes.peaks).toEqual([3.02, 3.52, 4.0]); // the snap targets
+    expect(st.lanes.melFrames).toBe(before.lanes.melFrames); // the spectrogram kept
+    expect(st.groupCount).toBe(before.groupCount);
+    const req = (await page.evaluate(() => (window as any).__fixStub.posted)).filter(
+      (p: any) => p.type === 'fix_lanes' && p.what === 'onset',
+    );
+    expect(req).toEqual([expect.objectContaining({ hop: 128, smooth: 5, which: 'ref' })]);
+    expect((await page.evaluate(() => (window as any).__fixStub.posted)).some((p: any) => p.type === 'fix_ref_onsets')).toBe(false);
   });
 
   test('43.24 the speed slider slows playback pitch-preserved; the % button resets to 100', async ({
@@ -3942,14 +3975,18 @@ const REF_ONSETS = Array.from({ length: 120 }, (_, k) => 2 + k * 0.5);
 async function gotoScoreless(
   page: Page,
   errors: string[],
-  { patch, extraParams = '' }: { patch?: (json: any) => void; extraParams?: string } = {},
+  {
+    patch,
+    extraParams = '',
+    stub,
+  }: { patch?: (json: any) => void; extraParams?: string; stub?: Parameters<typeof installWorkerStub>[1] } = {},
 ) {
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(`console: ${m.text()}`);
   });
   await gotoFixMode(page, patch, 'alignment-noscore.json', extraParams);
-  await installWorkerStub(page, { refOnsets: { peaks: REF_ONSETS } });
+  await installWorkerStub(page, stub ?? { refOnsets: { peaks: REF_ONSETS } });
 }
 
 test.describe('43: score-less correction (B1)', () => {
@@ -4412,49 +4449,68 @@ test.describe('43: score-less correction (B1)', () => {
     expect(errors).toEqual([]);
   });
 
-  test('43.73 the onset-detector trial (?onsetHop, ?onsetSmooth) reaches the lanes and a fresh tick set; anchors laid on the trial’s ticks save the detector, and a saved session reopens on the detector it was saved with, whatever the URL', async ({
+  test('43.73 score-less, the onset menu re-detects the free ticks and keeps the anchored and added ones, dropping a re-detected tick within 50 ms of a kept one; the record names the detector, and a reopened session detects with it again; the URL no longer sets it', async ({
     page,
   }) => {
     const errors: string[] = [];
     const posted = () => page.evaluate(() => (window as any).__fixStub.posted);
     const refOnsetsReq = async () => (await posted()).filter((p: any) => p.type === 'fix_ref_onsets');
-    // Fresh session, trial on: the lanes and the tick set both ask for it.
-    await gotoScoreless(page, errors, { extraParams: '&onsetHop=256&onsetSmooth=1' });
-    await enterFixOn(page, TARGET_ROW);
-    await waitLoopReady(page);
-    expect(await refOnsetsReq()).toEqual([expect.objectContaining({ hop: 256, smooth: 1 })]);
-    const lanes = (await posted()).filter((p: any) => p.type === 'fix_lanes');
-    expect(lanes.length).toBeGreaterThan(0);
-    for (const p of lanes) expect(p).toMatchObject({ hop: 256, smooth: 1 });
-    // An anchor on the trial's ticks: the record names the detector.
-    await page.click('#fix-auto-replay');
-    await page.keyboard.press('ArrowRight');
-    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
-    await dragSelectedTick(page, 30);
-    expect((await fixState(page)).gridAnchors).toHaveLength(1);
-    const saved = await page.evaluate(() =>
-      JSON.parse(JSON.stringify((window as any)._listenTest.session.loadedAlignmentJSON.header.corrections)),
-    );
-    expect(saved.refTickDetector).toEqual({ hop: 256, smooth: 1 });
-    // Reopened WITHOUT the trial in the URL: the saved detector holds.
-    await gotoScoreless(page, errors, { patch: (json) => (json.header.corrections = saved) });
-    await enterFixOn(page, TARGET_ROW);
-    await waitLoopReady(page);
-    expect(await refOnsetsReq()).toEqual([expect.objectContaining({ hop: 256, smooth: 1 })]);
-    // A session saved on the shipped detector, reopened WITH the trial: shipped
-    // ticks; the lanes follow the URL.
-    const shipped = { ...saved };
-    delete shipped.refTickDetector;
-    await gotoScoreless(page, errors, {
-      patch: (json) => (json.header.corrections = shipped),
-      extraParams: '&onsetHop=256&onsetSmooth=1',
-    });
+    // At hop 256 the stub's detector finds every onset 10 ms later, and one
+    // more at 4.80 s — 20 ms from the tick added at 4.78 s.
+    const at256 = [...REF_ONSETS.map((t) => t + 0.01), 4.8].sort((a, b) => a - b);
+    const stub = { refOnsets: { peaks: REF_ONSETS, byHop: { 256: at256 } } };
+    const withAdded = (json: any) =>
+      (json.header.corrections = { version: 1, base: null, anchors: [], gaps: [], refTicks: [4.78] });
+    // The old trial parameters are ignored: the menu's default detects.
+    await gotoScoreless(page, errors, { patch: withAdded, extraParams: '&onsetHop=256&onsetSmooth=1', stub });
     await enterFixOn(page, TARGET_ROW);
     await waitLoopReady(page);
     expect(await refOnsetsReq()).toEqual([expect.objectContaining({ hop: 512, smooth: 5 })]);
-    for (const p of (await posted()).filter((p: any) => p.type === 'fix_lanes')) {
-      expect(p).toMatchObject({ hop: 256, smooth: 1 });
-    }
+    await expect(page.locator('#fix-onset-hop')).toHaveValue('512');
+    await expect(page.locator('#fix-onset-smooth')).toHaveValue('5');
+    let st = await fixState(page);
+    expect(st.groupCount).toBe(REF_ONSETS.length + 1);
+    // An anchor on the tick at 2.5 s.
+    await page.click('#fix-auto-replay');
+    await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    expect((await fixState(page)).selRefT).toBeCloseTo(2.5, 9);
+    await dragSelectedTick(page, 30);
+    expect((await fixState(page)).gridAnchors).toHaveLength(1);
+    // Hop 256: the onset lanes alone are asked for again, and the ticks re-detected.
+    await page.selectOption('#fix-onset-hop', '256');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.rederived === 1);
+    const lanes = (await posted()).filter((p: any) => p.type === 'fix_lanes' && p.what === 'onset');
+    expect(lanes.length).toBeGreaterThan(0);
+    for (const p of lanes) expect(p).toMatchObject({ hop: 256, smooth: 5 });
+    expect((await refOnsetsReq()).at(-1)).toMatchObject({ hop: 256, smooth: 5 });
+    st = await fixState(page);
+    // 121 detected; 4.80 (beside the added 4.78) and 2.51 (beside the anchor's
+    // own 2.50, now a tick of its own) dropped; the added tick and the anchor kept.
+    expect(st.refTickParts).toEqual({ detected: 121, added: 1, anchorBorn: 1, dropped: 2 });
+    expect(st.groupCount).toBe(121);
+    expect(st.addedRefTickCount).toBe(1);
+    expect(st.gridAnchors).toHaveLength(1);
+    // The anchor still has its tick: the 2.50 s tick, selected and anchored.
+    expect(st.selRefT).toBeCloseTo(2.5, 9);
+    expect(st.pageTicks.find((p: any) => Math.abs(p.refT - 2.5) < 1e-9)?.anchored).toBe(true);
+    expect(st.pageTicks.some((p: any) => Math.abs(p.refT - 2.51) < 1e-9)).toBe(false);
+    expect(st.pageTicks.some((p: any) => Math.abs(p.refT - 3.01) < 1e-9)).toBe(true);
+    // The record names the detector.
+    const saved = await page.evaluate(() =>
+      JSON.parse(JSON.stringify((window as any)._listenTest.session.loadedAlignmentJSON.header.corrections)),
+    );
+    expect(saved.refTickDetector).toEqual({ hop: 256, smooth: 5 });
+    // Reopened: the menu comes back on 256 and the same ticks are detected.
+    await gotoScoreless(page, errors, { patch: (json) => (json.header.corrections = saved), stub });
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await expect(page.locator('#fix-onset-hop')).toHaveValue('256');
+    expect(await refOnsetsReq()).toEqual([expect.objectContaining({ hop: 256, smooth: 5 })]);
+    st = await fixState(page);
+    expect(st.refTickParts).toEqual({ detected: 121, added: 1, anchorBorn: 1, dropped: 2 });
+    expect(st.gridAnchors).toHaveLength(1);
+    expect(st.pageTicks.find((p: any) => Math.abs(p.refT - 2.5) < 1e-9)?.anchored).toBe(true);
     expect(errors).toEqual([]);
   });
 
