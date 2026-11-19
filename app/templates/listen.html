@@ -209,7 +209,15 @@
                     <option value="1">1 (full)</option>
                     <option value="2">2 (half)</option>
                   </select>
-                  <span class="align-param-help">Downsampling factor for score alignment. 1 = full resolution, slower but more accurate.</span>
+                  <span class="align-param-help">Downsampling factor for the coarse score pass. 1 = full resolution (10 Hz), slower; with the fine pass, 2 is as accurate.</span>
+                </div>
+                <div class="align-param-row align-score-param">
+                  <label for="align-param-score-fine">Score fine pass</label>
+                  <select id="align-param-score-fine">
+                    <option value="25">On</option>
+                    <option value="0">Off</option>
+                  </select>
+                  <span class="align-param-help">Refines the score alignment at 25 Hz around the coarse pass using note onsets (DLNCO features, after Ewert, Müller &amp; Grosche 2009). Off = the coarse pass alone, as before 0.143.0.</span>
                 </div>
               </div>
             </details>

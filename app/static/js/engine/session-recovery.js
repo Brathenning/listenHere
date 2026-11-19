@@ -171,7 +171,7 @@ export function restoredHeader(loadedHeader, snapHeader) {
   const h = { ...(snapHeader || {}) };
   // additions and openEnds describe body entries: a snapshot's may name
   // recordings the loaded file does not hold (see lostAdditions).
-  for (const k of ["ref", "meiUri", "alignmentParams", "createdBy", "createdAt", "additions", "openEnds"]) {
+  for (const k of ["ref", "meiUri", "alignmentParams", "scoreAligner", "createdBy", "createdAt", "additions", "openEnds"]) {
     if (loadedHeader && k in loadedHeader) h[k] = loadedHeader[k];
     else delete h[k];
   }

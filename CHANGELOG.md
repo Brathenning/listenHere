@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.143.0 -- Score alignment: a fine pass on note onsets
+
+* The wizard's score alignment adds a fine pass: a banded DTW at 25 Hz, ±2 s around the coarse path, on chroma plus DLNCO onset features (decaying, locally normalised chroma onsets after Ewert, Müller & Grosche, ICASSP 2009; parameters after the Sync Toolbox, Müller et al., JOSS 6(64):3434, 2021; our onsets come from an STFT, not its IIR filterbank). Against ground truth, median error 52.5 → 29.3 ms on Fledermaus (2,115 hand-placed anchors, VPO-2022) and 53.2 → 23.4 ms on 57 (n)ASAP piano performances.
+* All three presets turn it on and pool the coarse score pass to 5 Hz (score resolution 2); Advanced → "Score fine pass" Off restores the coarse-only score pass of 0.141.0 exactly. Saved preset choices take the new values; saved custom settings keep theirs and gain the fine pass.
+* New alignments carry `header.scoreAligner`, the score aligner's method, rates, and parameters as run; correction records copy it into their base. Absent means an alignment made before 0.143.0.
+* Testing: 41.20–41.22 new; specs 17, 41, 42, 43, 44, and 49 pass (195, Chromium; 43.59 failed once under load and passed 3/3 alone). The worker's own score_align reproduces the prototype exactly on both ground truths, and Pyodide 0.26.4 matches native numpy bit for bit.
+
 ### 0.141.0 -- Correction: the onset detector in a menu
 
 * Correction mode's Snap controls set the onset detector's hop (6, 12, or 23 ms) and smoothing (off, 3–9); the `?onsetHop` / `?onsetSmooth` URL parameters of 0.126.0 are gone. Only the onset lanes are recomputed. With a score this moves the lanes and the snap targets; score-less it also re-detects the unanchored ticks, keeping anchored and added ones and dropping a re-detected tick within 50 ms of a kept one. A saved session records the detector and reopens on it, rebuilding anchored ticks a detector no longer finds; the chooser's marker total counts the same table.

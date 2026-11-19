@@ -26,22 +26,29 @@ let alignmentRunning = false; // true while worker is active
 // Alignment quality presets and parameter defaults
 // ---------------------------------------------------------------------------
 
+// The score half (0.143.0): a 5 Hz coarse pass (scoreDownsample 2) and the
+// DLNCO fine pass at 25 Hz in every preset — the configuration measured on
+// 2026-11-19 against human anchors and piano ground truth. scoreFineRate 0
+// restores the coarse-only score pass of 0.142 and before.
 export const PRESETS = {
   fast: {
     coarse: 4,
     slack: 80,
     featureRate: 10,
-    scoreDownsample: 2,  },
+    scoreDownsample: 2,
+    scoreFineRate: 25,  },
   balanced: {
     coarse: 2,
     slack: 120,
     featureRate: 10,
-    scoreDownsample: 1,  },
+    scoreDownsample: 2,
+    scoreFineRate: 25,  },
   hq: {
     coarse: 2,
     slack: 160,
     featureRate: 20,
-    scoreDownsample: 1,  },
+    scoreDownsample: 2,
+    scoreFineRate: 25,  },
 };
 
 // The automatic reference choice (the worker's choose_reference) compares the
@@ -82,6 +89,9 @@ function readAdvancedParams() {
     scoreDownsample: parseInt(
       document.getElementById("align-param-score-ds").value,
     ),
+    scoreFineRate: parseInt(
+      document.getElementById("align-param-score-fine").value,
+    ),
   };
 }
 
@@ -91,6 +101,7 @@ function writeAdvancedParams(p) {
   document.getElementById("align-param-slack").value = p.slack;
   document.getElementById("align-param-feature-rate").value = p.featureRate;
   document.getElementById("align-param-score-ds").value = p.scoreDownsample;
+  document.getElementById("align-param-score-fine").value = p.scoreFineRate;
 }
 
 /** Check if current advanced params match any preset. */
@@ -100,7 +111,8 @@ function detectPreset(params) {
       p.coarse === params.coarse &&
       p.slack === params.slack &&
       p.featureRate === params.featureRate &&
-      p.scoreDownsample === params.scoreDownsample
+      p.scoreDownsample === params.scoreDownsample &&
+      p.scoreFineRate === params.scoreFineRate
     )
       return name;
   }
@@ -1125,6 +1137,14 @@ export function initAlignPanel() {
 
   // Load saved settings and apply to UI
   const saved = loadQualitySettings();
+  // Settings saved before 0.143.0: a named preset takes its current values
+  // (the fine pass and the 5 Hz coarse pass); custom ones keep theirs and
+  // gain the fine pass.
+  if (saved.preset && PRESETS[saved.preset]) {
+    saved.params = { ...PRESETS[saved.preset] };
+  } else if (saved.params && saved.params.scoreFineRate == null) {
+    saved.params = { ...saved.params, scoreFineRate: PRESETS.balanced.scoreFineRate };
+  }
   writeAdvancedParams(saved.params);
   if (saved.preset && PRESETS[saved.preset]) {
     const radio = document.querySelector(
@@ -1154,6 +1174,7 @@ export function initAlignPanel() {
     "align-param-slack",
     "align-param-feature-rate",
     "align-param-score-ds",
+    "align-param-score-fine",
   ];
   advancedInputs.forEach((id) => {
     const el = document.getElementById(id);

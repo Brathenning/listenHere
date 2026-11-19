@@ -101,7 +101,13 @@ SCORE_FEATURE_RATE = 10  # Hz (HOP = 2205 samples)
 SCORE_HOP  = SR // SCORE_FEATURE_RATE
 SCORE_N_FFT = 4096
 SCORE_DOWNSAMPLE = 2     # pool by this factor => coarse at 5 Hz
-ONSET_N_FFT = 1024       # short window (46 ms) for sharp onset detection
+# The fine pass (0.143.0): a banded DTW at SCORE_FINE_RATE around the coarse
+# path, with chroma + DLNCO onset costs (see compute_dlnco). 0 = off, which
+# returns exactly the coarse-only table of 0.142 and before.
+SCORE_FINE_RATE_DEFAULT = 25  # Hz; the option scoreFineRate (0 = off)
+SCORE_FINE_RATE = SCORE_FINE_RATE_DEFAULT
+SCORE_FINE_SLACK_SEC = 2.0  # band half-width around the coarse path
+ONSET_N_FFT = 1024      # short window (46 ms) for sharp onset detection
 ONSET_SMOOTH = 5         # moving-average width (frames) over the onset curve; 1 = off
 # (An ONSET_WEIGHT constant lived here until 0.59.0: build_score_features scaled
 # each chroma frame by 1 + weight × onset strength and L2-renormalised the
@@ -142,7 +148,7 @@ REF_CHOICE_GUARD_SHARE = 0.1  # drop a candidate more targets than this would fa
 def _apply_options():
     """Override module constants from JS _opt_* globals (if set)."""
     global FEATURE_RATE, HOP, COARSE, SLACK
-    global SCORE_DOWNSAMPLE
+    global SCORE_DOWNSAMPLE, SCORE_FINE_RATE
     v = int(_opt_feature_rate) if int(_opt_feature_rate) > 0 else None
     if v:
         FEATURE_RATE = v
@@ -156,6 +162,10 @@ def _apply_options():
     v = int(_opt_score_downsample) if int(_opt_score_downsample) > 0 else None
     if v:
         SCORE_DOWNSAMPLE = v
+    # Unlike the others, 0 is a value (off); negative or unset = the default,
+    # reset per batch so one run's choice never leaks into the next.
+    v = int(globals().get('_opt_score_fine_rate', -1))
+    SCORE_FINE_RATE = v if v >= 0 else SCORE_FINE_RATE_DEFAULT
 
 
 def _stft_setup(audio, n_fft, hop):
@@ -274,6 +284,116 @@ def _pool_features(feat, factor):
     norms = np.linalg.norm(pooled, axis=0, keepdims=True)
     norms[norms < 1e-8] = np.float32(1.0)
     return (pooled / norms).astype(np.float32)
+
+
+# --- DLNCO onset features for the score fine pass (0.143.0) ---
+#
+# Decaying, locally adaptively normalised chroma onsets after S. Ewert,
+# M. Müller, P. Grosche, "High Resolution Audio Synchronization Using Chroma
+# Onset Features", ICASSP 2009, pp. 1869-1872. The parameters (0.8 s local
+# max norm, floor 0.1, sqrt(1/n) decay over 0.2 s, the 2/3 block-max peak
+# rule, cosine + Euclidean cost) are those of the Sync Toolbox (M. Müller,
+# Y. Özer, M. Krause, T. Prätzlich, J. Driedger, JOSS 6(64):3434, 2021,
+# feature/dlnco.py, feature/pitch_onset.py, dtw/cost.py). Unlike the Sync
+# Toolbox, the per-pitch-class onsets come from an STFT (half-wave rectified
+# log-magnitude difference folded to pitch classes), not from its IIR pitch
+# filterbank. Ported from the offline prototype of 2026-10-23, which was
+# measured against real ground truth on 2026-11-19.
+
+DLNCO_N_FFT = 2048          # STFT window of the onset features
+DLNCO_FMIN = 100.0          # Hz; bins at or below are ignored
+DLNCO_PEAK_BLOCK_SEC = 0.25 # peaks below 2/3 of their block's maximum are dropped
+DLNCO_NORM_SEC = 0.8        # local max-filter normalisation window
+DLNCO_NORM_FLOOR = 0.1      # ... and its floor
+DLNCO_DECAY_SEC = 0.2       # sqrt(1/n) decay after each onset
+DLNCO_WEIGHT = 1.0          # onset cost weight against the chroma cost
+
+
+def _onset_logdiff_pc(audio, hop):
+    """Per pitch class and frame: the sum over bins of the half-wave rectified
+    difference of log(1 + |X|) between consecutive frames. Streaming, like
+    compute_chroma. Frame 0 has no predecessor and stays 0."""
+    n_fft = DLNCO_N_FFT
+    audio = np.asarray(audio, dtype=np.float32)
+    pk = float(np.max(np.abs(audio))) or 1.0
+    audio = audio / pk
+    audio_pad, window, n_frames, s = _stft_setup(audio, n_fft, hop)
+    freqs = np.fft.rfftfreq(n_fft, d=1.0 / SR)
+    valid = freqs > DLNCO_FMIN
+    midi_f = 69.0 + 12.0 * np.log2(np.maximum(freqs[valid], 1e-9) / 440.0)
+    pc = np.round(midi_f).astype(int) % 12
+    masks = [pc == k for k in range(12)]
+    out = np.zeros((12, n_frames), dtype=np.float32)
+    prev = None
+    CHUNK = 256
+    for cs in range(0, n_frames, CHUNK):
+        ce = min(n_frames, cs + CHUNK)
+        frames = np.lib.stride_tricks.as_strided(
+            audio_pad[cs * hop:],
+            shape=(ce - cs, n_fft),
+            strides=(s * hop, s)
+        )
+        mag = np.log1p(np.abs(np.fft.rfft(frames * window, axis=1)[:, valid])).astype(np.float32)
+        ext = mag if prev is None else np.vstack([prev[None, :], mag])
+        d = np.maximum(np.float32(0), ext[1:] - ext[:-1])
+        o0 = cs + (1 if prev is None else 0)
+        for k in range(12):
+            out[k, o0:ce] = d[:, masks[k]].sum(axis=1)
+        prev = mag[-1].copy()
+        del mag, ext, d
+    return out
+
+
+def _onset_peaks(co, rate):
+    """Keep per-band local maxima (+-2 frames) at or above 2/3 of the band's
+    maximum within blocks of DLNCO_PEAK_BLOCK_SEC; zero elsewhere."""
+    T = co.shape[1]
+    out = np.zeros_like(co)
+    pad = np.pad(co, ((0, 0), (2, 2)), constant_values=-1)
+    lm = np.ones_like(co, dtype=bool)
+    for sft in (-2, -1, 1, 2):
+        lm &= co >= pad[:, 2 + sft: 2 + sft + T]
+    blk = max(1, int(round(DLNCO_PEAK_BLOCK_SEC * rate)))
+    nb = (T + blk - 1) // blk
+    bm = np.pad(co, ((0, 0), (0, nb * blk - T))).reshape(12, nb, blk).max(axis=2)
+    thr = np.repeat(bm, blk, axis=1)[:, :T] * (2.0 / 3.0)
+    keep = lm & (co >= thr) & (co > 0)
+    out[keep] = co[keep]
+    return out
+
+
+def _dlnco(co, rate):
+    """Peak-picked onsets (12, T) -> DLNCO (12, T): scaled by the 99th
+    percentile frame norm, divided by a local max-filtered norm (floored),
+    then each onset decays as sqrt(1/n)."""
+    T = co.shape[1]
+    nrm = np.linalg.norm(co, axis=0)
+    nz = nrm[nrm > 0]
+    scale = np.percentile(nz, 99) if nz.size else 1.0
+    co = co / max(scale, 1e-9)
+    nrm = nrm / max(scale, 1e-9)
+    L = int(DLNCO_NORM_SEC * rate)
+    L -= L % 2
+    h = L // 2
+    ln = np.lib.stride_tricks.sliding_window_view(np.pad(nrm, (h, h)), 2 * h + 1).max(axis=1)[:T]
+    ln = np.maximum(ln, DLNCO_NORM_FLOOR)
+    lnco = co / ln[None, :]
+    n = max(1, int(round(DLNCO_DECAY_SEC * rate)))
+    coef = np.sqrt(1.0 / np.arange(1, n + 1))
+    out = lnco * coef[0]
+    for k in range(1, n):
+        sh = np.zeros_like(lnco)
+        sh[:, k:] = lnco[:, :-k] * coef[k]
+        out = np.maximum(out, sh)
+    return out.astype(np.float32)
+
+
+def compute_dlnco(audio, hop):
+    """DLNCO onset features (12, n_frames) at hop, frames as compute_chroma's
+    with n_fft = DLNCO_N_FFT (centre each frame on a chroma frame before use:
+    see _score_fine_features)."""
+    rate = SR / hop
+    return _dlnco(_onset_peaks(_onset_logdiff_pc(audio, hop), rate), rate)
 
 
 def synth_midi_audio(notes, tpq, tcs, duration):
@@ -461,7 +581,7 @@ def _dtw_f32(C, open_ends=False, entry_max=None, exit_min=None):
     return np.array([pi, pj])
 
 
-def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
+def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi, costfn=None):
     """Streaming band DTW guided by per-row column bounds.
 
     Memory profile (regardless of audio length):
@@ -477,6 +597,10 @@ def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
     ref_chroma : (12, N) float32
     other_chroma: (12, M) float32
     j_lo, j_hi : (N,) int32  inclusive band col bounds per row
+    costfn     : optional costfn(i, lo, hi) -> (hi - lo + 1,) row costs in
+                 place of the cosine cost (the score fine pass adds DLNCO
+                 onset costs). None = the cosine cost, exactly as before; the
+                 audio pairs and fix mode never pass one.
     Returns warping path (2, L).
     """
     N = ref_chroma.shape[1]
@@ -494,10 +618,13 @@ def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
         lo = int(j_lo[i]); hi = int(j_hi[i]); bw = hi - lo + 1
 
         # ── cost vector for this row's band (one fast matmul) ──────────────
-        costs = np.clip(
-            1.0 - ref_chroma[:, i] @ other_chroma[:, lo : hi + 1],
-            0, 2
-        ).astype(np.float32)                                  # (bw,)
+        if costfn is None:
+            costs = np.clip(
+                1.0 - ref_chroma[:, i] @ other_chroma[:, lo : hi + 1],
+                0, 2
+            ).astype(np.float32)                              # (bw,)
+        else:
+            costs = costfn(i, lo, hi).astype(np.float32)      # (bw,)
 
         # ── diagonal and vertical predecessors (numpy, no loop) ────────────
         # d_prev[lo-1 : hi] for diagonal; pad with inf at the left boundary
@@ -1431,11 +1558,18 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
          run fully unconstrained DTW on the small matrix.  This captures
          global structure — the essential fix for the 'random' failure mode
          that plagued a single-level SC-band approach.
-      5. Map each deduplicated note onset/offset through the coarse warping
-         path via linear interpolation → final score-to-audio alignment.
+      5. Fine pass (SCORE_FINE_RATE > 0, since 0.143.0): fix mode's banded
+         DTW (_fix_guided_warp) at SCORE_FINE_RATE, +- SCORE_FINE_SLACK_SEC
+         around the coarse path, on chroma plus DLNCO onset costs
+         (_score_fine_features). With SCORE_FINE_RATE = 0 the coarse path
+         maps the notes, exactly as before 0.143.0.
+      6. Map each deduplicated note onset/offset through the warping path
+         via linear interpolation → final score-to-audio alignment.
 
     Returns dict: score_onset, ref_onset, score_offset, ref_offset
-    (score times in quarter-notes; ref times in seconds).
+    (score times in quarter-notes; ref times in seconds), synth_onset /
+    synth_offset, and score_aligner: the provenance stamp of what ran
+    (the caller moves it to header.scoreAligner).
     """
     t0_total = _time.time()
     reportStep("score", "start", "Score alignment", None, None, None)
@@ -1466,16 +1600,25 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
     reportProgress("Score alignment: synthesising MIDI audio...", None)
     synth_audio = synth_midi_audio(notes, tpq, tcs, midi_dur)
 
+    fine_rate = int(SCORE_FINE_RATE)
     reportProgress("Score alignment: extracting chroma features...", None)
     sc_feat = compute_chroma_score(synth_audio)
-    del synth_audio
+    if fine_rate <= 0:
+        del synth_audio
     rc_feat = compute_chroma_score(ref_audio)
+    fine = None
+    if fine_rate > 0:
+        # Before the coarse DTW, so the synth PCM is gone before the coarse
+        # cost matrix exists (peak memory = the larger stage, not the sum).
+        reportProgress("Score alignment: extracting onset features...", None)
+        fine = _score_fine_features(synth_audio, ref_audio, fine_rate)
+        del synth_audio
 
     # --- Coarse DTW (unconstrained) on downsampled features ---
     reportProgress("Score alignment: coarse DTW...", None)
     sc_c = _pool_features(sc_feat, SCORE_DOWNSAMPLE)
     rc_c = _pool_features(rc_feat, SCORE_DOWNSAMPLE)
-    del sc_feat, rc_feat   # no fine-DTW pass needed
+    del sc_feat, rc_feat
     n_sc_c = sc_c.shape[1]
     n_rc_c = rc_c.shape[1]
 
@@ -1492,6 +1635,28 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
                   + span_from)
     del wp_c
     wf = lambda xq: interp_linear_extrap(sc_times_c, rc_times_c, xq)
+    stamp = _score_aligner_stamp(None)
+
+    if fine is not None:
+        reportProgress("Score alignment: fine DTW...", None)
+        fs, fr, oa, ob, d = fine
+        del fine
+        if fs.shape[1] < 2 or fr.shape[1] < 2:
+            stamp = _score_aligner_stamp(None, "too short for the fine pass")
+        else:
+            def costfn(i, lo, hi):
+                cc = np.clip(1.0 - fs[:, i] @ fr[:, lo: hi + 1], 0, 2)
+                return cc + DLNCO_WEIGHT * np.sqrt(
+                    ((ob[:, lo: hi + 1] - oa[:, i: i + 1]) ** 2).sum(axis=0))
+            # The coarse path as knots: no new DTW, fix mode's banded one, whose
+            # band handling (corner seeding, bridged floors) the score pass
+            # inherits. Never call _guided_band_dtw directly here: it seeds only
+            # its origin cell.
+            wf = _fix_guided_warp(fs, fr, 0.0, midi_dur, span_from, span_to,
+                                  sc_times_c, rc_times_c, SCORE_FINE_SLACK_SEC,
+                                  "score fine pass", costfn)
+            stamp = _score_aligner_stamp(fine_rate, None, d)
+        del fs, fr, oa, ob
 
     # Deduplicate chord notes: one entry per unique (onset_tick, offset_tick)
     seen = {}
@@ -1519,7 +1684,67 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
         "ref_offset":   r_off,
         "synth_onset":  s_on_sec,   # listen.js uses these to build the synth waveform’s alignment grid
         "synth_offset": s_off_sec,
+        "score_aligner": stamp,
     }
+
+
+def _score_fine_features(synth_audio, ref_audio, rate):
+    """The fine pass's features at rate Hz: chroma (SCORE_N_FFT) and DLNCO
+    onsets (DLNCO_N_FFT) for the synth and the reference. The two STFT
+    windows differ, so frame k of the onsets is centred (n_fft - DLNCO_N_FFT)
+    / 2 samples before chroma frame k: shift the onsets by d frames, rounded
+    (one frame at 25 Hz), and match the chroma frame counts. Without the
+    shift the alignment comes out a plausible 20-40 ms off.
+    Returns (fs, fr, oa, ob, d)."""
+    hop = SR // int(rate)
+    fs = compute_chroma(synth_audio, n_fft=SCORE_N_FFT, hop=hop)
+    fr = compute_chroma(ref_audio, n_fft=SCORE_N_FFT, hop=hop)
+    d = max(0, int(round((SCORE_N_FFT - DLNCO_N_FFT) / 2 / hop)))
+    def fit(o, n):
+        o = o[:, d:d + n]
+        return np.pad(o, ((0, 0), (0, n - o.shape[1]))) if o.shape[1] < n else o
+    oa = fit(compute_dlnco(synth_audio, hop), fs.shape[1])
+    ob = fit(compute_dlnco(ref_audio, hop), fr.shape[1])
+    return fs, fr, oa, ob, d
+
+
+SCORE_ALIGNER_REFERENCES = [
+    "S. Ewert, M. Müller, P. Grosche: High Resolution Audio Synchronization "
+    "Using Chroma Onset Features. ICASSP 2009, pp. 1869-1872 (DLNCO features)",
+    "M. Müller, Y. Özer, M. Krause, T. Prätzlich, J. Driedger: Sync Toolbox: "
+    "A Python Package for Efficient, Robust, and Accurate Music Synchronization. "
+    "JOSS 6(64):3434, 2021, doi:10.21105/joss.03434 (DLNCO parameters; onsets "
+    "here from an STFT, not its IIR filterbank)",
+]
+
+
+def _score_aligner_stamp(fine_rate, skipped=None, onset_shift=None):
+    """header.scoreAligner: what score_align actually ran, in Hz and
+    seconds. Provenance only; nothing reads it back as an option (the
+    options live in header.alignmentParams)."""
+    stamp = {
+        "method": "chroma-dtw",
+        "coarseRateHz": SCORE_FEATURE_RATE / SCORE_DOWNSAMPLE,
+        "chromaNfft": SCORE_N_FFT,
+    }
+    if skipped:
+        stamp["fineSkipped"] = skipped
+    if fine_rate:
+        stamp["method"] = "chroma-dtw+dlnco-fine"
+        stamp["fine"] = {
+            "rateHz": float(fine_rate),
+            "slackSec": SCORE_FINE_SLACK_SEC,
+            "onsetWeight": DLNCO_WEIGHT,
+            "onsetNfft": DLNCO_N_FFT,
+            "onsetShiftFrames": onset_shift,
+            "fminHz": DLNCO_FMIN,
+            "peakBlockSec": DLNCO_PEAK_BLOCK_SEC,
+            "normSec": DLNCO_NORM_SEC,
+            "normFloor": DLNCO_NORM_FLOOR,
+            "decaySec": DLNCO_DECAY_SEC,
+        }
+        stamp["references"] = list(SCORE_ALIGNER_REFERENCES)
+    return stamp
 
 
 # --- Fix-mode (hand-correction) session — plan section 14, increment 1 ---
@@ -1619,7 +1844,7 @@ def _fix_features(audio, lo_sec, hi_sec, hop):
     hi = min(len(audio), int(hi_sec * SR))
     return compute_chroma(audio[lo:hi], n_fft=SCORE_N_FFT, hop=hop)
 
-def _fix_guided_warp(feat_a, feat_b, a_lo, a_hi, b_lo, b_hi, knots_a, knots_b, slack, who):
+def _fix_guided_warp(feat_a, feat_b, a_lo, a_hi, b_lo, b_hi, knots_a, knots_b, slack, who, costfn=None):
     """The anchored refill's core, shared by the score-to-reference and the
     audio-to-audio corrections: a guided band DTW between two feature slices
     whose corners ARE the two anchors. The band is centred on the PRIOR
@@ -1661,7 +1886,7 @@ def _fix_guided_warp(feat_a, feat_b, a_lo, a_hi, b_lo, b_hi, knots_a, knots_b, s
     # min of two non-decreasing sequences, so j_lo stays non-decreasing.
     j_lo[1:] = np.minimum(j_lo[1:], j_hi[:-1] + 1)
 
-    wp = make_monotonic(_guided_band_dtw(feat_a, feat_b, j_lo, j_hi))
+    wp = make_monotonic(_guided_band_dtw(feat_a, feat_b, j_lo, j_hi, costfn))
     a_path = a_lo + wp[0].astype(np.float64) * seg_a / max(n_a - 1, 1)
     b_path = b_lo + wp[1].astype(np.float64) * seg_b / max(n_b - 1, 1)
     return lambda xq: interp_linear_extrap(a_path, b_path, xq)
@@ -2209,6 +2434,8 @@ self.onmessage = async function (e) {
       pyodide.globals.set("_opt_slack", opts.slack ?? 0);
       pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
       pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
+      // 0 = off is a value here; absent (-1) = the worker's default.
+      pyodide.globals.set("_opt_score_fine_rate", opts.scoreFineRate ?? -1);
       pyodide.globals.set("_ref_name_arg", refName);
       pyodide.globals.set("_peak_count_arg", peakCount || 0);
       pyodide.globals.set("_score_mode_arg", !!scoreMode);
@@ -2296,6 +2523,7 @@ if bool(_has_mei_arg) and _ref_audio_copy is not None:
     midi_bytes_py = bytes(_midi_bytes_arg.to_py())
     score_data = score_align(midi_bytes_py, _ref_audio_copy, str(_mei_uri_arg))
     if score_data:
+        result["header"]["scoreAligner"] = score_data.pop("score_aligner", None)
         result["body"]["score"] = score_data
         result["header"]["meiUri"] = str(_mei_uri_arg)
     del midi_bytes_py
@@ -2351,6 +2579,7 @@ json.dumps(_added)
       pyodide.globals.set("_opt_slack", opts.slack ?? 0);
       pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
       pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
+      pyodide.globals.set("_opt_score_fine_rate", opts.scoreFineRate ?? -1);
       pyodide.globals.set("_fix_ref_data", refSamples);
       pyodide.globals.set("_fix_midi_arg", meiMidi);
       const eventsJson = await pyodide.runPythonAsync(`

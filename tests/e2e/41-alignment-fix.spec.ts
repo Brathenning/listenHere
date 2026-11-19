@@ -498,6 +498,76 @@ print(json.dumps({
 }))
 `;
 
+// The score fine pass (0.143.0): score_align with and without the DLNCO fine
+// pass on the ladder under the reference's tempo map (plus a little noise, so
+// no frame ties exactly), the band DTW's cost hook, the option semantics,
+// and the onset features' centring on the chroma frames.
+const HARNESS_SCORE_FINE = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+end_tick = max(n[1] for n in notes)
+tcs_b = [(0, 500000), (960, 375000)]
+ref = synth_midi_audio(notes, tpq, tcs_b, _tick_to_sec(end_tick, tpq, tcs_b) + 0.5)
+ref = (ref + 0.01 * np.random.default_rng(1).standard_normal(len(ref))).astype(np.float32)
+truth = [_tick_to_sec(k * tpq, tpq, tcs_b) for k in range(16)]
+
+def run(rate, ds):
+    global SCORE_FINE_RATE, SCORE_DOWNSAMPLE
+    SCORE_FINE_RATE, SCORE_DOWNSAMPLE = rate, ds
+    return score_align(midi, ref, '')
+off, on = run(0, 2), run(25, 2)
+
+# The cost hook: None and an explicit cosine costfn decode the same path.
+A = compute_chroma(ref[: SR * 4], n_fft=SCORE_N_FFT, hop=882)
+B = compute_chroma(ref[SR // 2: SR * 4], n_fft=SCORE_N_FFT, hop=882)
+N, M = A.shape[1], B.shape[1]
+j_lo = np.zeros(N, dtype=np.int32)
+j_hi = np.minimum(M - 1, (np.arange(N) * (M - 1) // max(N - 1, 1)) + 20).astype(np.int32)
+j_hi[-1] = M - 1
+p0 = _guided_band_dtw(A, B, j_lo, j_hi)
+p1 = _guided_band_dtw(A, B, j_lo, j_hi,
+                      lambda i, lo, hi: np.clip(1.0 - A[:, i] @ B[:, lo: hi + 1], 0, 2))
+p2 = _guided_band_dtw(A, B, j_lo, j_hi, lambda i, lo, hi: np.zeros(hi - lo + 1))
+
+# Option semantics: unset or negative = the default, 0 = off, else the rate.
+opts = {}
+for v in (None, -1, 0, 50):
+    _opt_feature_rate = 0; _opt_coarse = 0; _opt_slack = 0; _opt_score_downsample = 0
+    if v is None:
+        globals().pop('_opt_score_fine_rate', None)
+    else:
+        _opt_score_fine_rate = v
+    _apply_options()
+    opts[str(v)] = SCORE_FINE_RATE
+
+# Centring: a tone starting at t0 in silence, at three phases of one frame.
+centring = []
+for t0 in (1.0, 1.013, 1.027):
+    a = np.zeros(3 * SR, dtype=np.float32)
+    n0 = int(t0 * SR)
+    a[n0:] = 0.5 * np.sin(2 * np.pi * 440.0 * np.arange(len(a) - n0) / SR)
+    fs, fr, oa, ob, d = _score_fine_features(a, a, 25)
+    k = int(np.argmax(ob[9]))
+    centre = lambda f: (f * 882 + SCORE_N_FFT / 2) / SR
+    centring.append({'t0': t0, 'd': d, 'shifted': centre(k), 'unshifted': centre(k + d),
+                     'frames': [fs.shape[1], ob.shape[1]]})
+
+print(json.dumps({
+    'truth': truth, 'off': off, 'on': on, 'opts': opts, 'centring': centring,
+    'hookSame': p0.tolist() == p1.tolist(), 'hookUsed': p0.tolist() != p2.tolist(),
+    'defaultRate': SCORE_FINE_RATE_DEFAULT,
+}))
+`;
+
 /** Run one python harness over align-worker.js's own PYTHON_CODE blob. */
 function execPython(harness: string, midiB64: string): any {
   const workerSrc = fs.readFileSync(
@@ -560,6 +630,12 @@ let scorelessOut: any = null;
 function runScorelessScenario(): any {
   if (!scorelessOut) scorelessOut = execPython(HARNESS_SCORELESS, buildMidiA().toString('base64'));
   return scorelessOut;
+}
+
+let scoreFineOut: any = null;
+function runScoreFineScenario(): any {
+  if (!scoreFineOut) scoreFineOut = execPython(HARNESS_SCORE_FINE, buildMidiA().toString('base64'));
+  return scoreFineOut;
 }
 
 let targetOut: any = null;
@@ -1473,6 +1549,52 @@ test.describe('41. alignment correction — worker segment realign', () => {
     expect(out.info.name).toBe('target.wav');
     for (const o of out.atOnsets) {
       expect(Math.abs(o.got - o.true), `quarter ${o.q}: got ${o.got}, true ${o.true}`).toBeLessThan(0.1);
+    }
+  });
+});
+
+test.describe('41. score fine pass (DLNCO) — worker', () => {
+  test('41.20 score_align with the fine pass: the same event table, closer to the true onsets than the coarse pass alone, and stamped', async () => {
+    test.setTimeout(120_000);
+    const out = runScoreFineScenario();
+    const { off, on, truth } = out;
+    // The event table's score side does not depend on the pass.
+    for (const k of ['score_onset', 'score_offset', 'synth_onset', 'synth_offset']) {
+      expect(on[k], k).toEqual(off[k]);
+    }
+    expect(on.ref_onset).toHaveLength(N_NOTES);
+    expectMonotonic(on.ref_onset);
+    expectMonotonic(on.ref_offset);
+    const maxErr = (r: number[]) => Math.max(...r.map((t, k) => Math.abs(t - truth[k])));
+    // Measured 2026-11-19: coarse alone (5 Hz) 89.5 ms worst, fine pass 30.0 ms.
+    expect(maxErr(on.ref_onset)).toBeLessThan(0.045);
+    expect(maxErr(on.ref_onset)).toBeLessThan(maxErr(off.ref_onset));
+    // The provenance stamp says what ran.
+    expect(off.score_aligner).toEqual({ method: 'chroma-dtw', coarseRateHz: 5, chromaNfft: 4096 });
+    const s = on.score_aligner;
+    expect(s.method).toBe('chroma-dtw+dlnco-fine');
+    expect(s.coarseRateHz).toBe(5);
+    expect(s.fine).toMatchObject({ rateHz: 25, slackSec: 2, onsetWeight: 1, onsetNfft: 2048, onsetShiftFrames: 1 });
+    expect(s.references.join(' ')).toMatch(/Ewert.*ICASSP 2009/);
+    expect(s.references.join(' ')).toMatch(/Sync Toolbox.*JOSS/);
+  });
+
+  test('41.21 the band DTW cost hook: none and an explicit cosine cost decode the same path, and a hook is really used; the option keeps 0 as off', async () => {
+    const out = runScoreFineScenario();
+    expect(out.hookSame).toBe(true);
+    expect(out.hookUsed).toBe(true);
+    expect(out.defaultRate).toBe(25);
+    expect(out.opts).toEqual({ None: 25, '-1': 25, '0': 0, '50': 50 });
+  });
+
+  test('41.22 onset features are centred on the chroma frames: a tone onset lands within half a frame, where unshifted it sits a frame late', async () => {
+    const out = runScoreFineScenario();
+    for (const c of out.centring) {
+      expect(c.d).toBe(1);
+      expect(c.frames[0]).toBe(c.frames[1]);
+      // Half a 25 Hz frame is 20 ms; measured 2026-11-19: 12.9, 0.1, 14.1 ms.
+      expect(Math.abs(c.shifted - c.t0), `onset at ${c.t0}`).toBeLessThan(0.021);
+      expect(c.unshifted - c.t0, `onset at ${c.t0}`).toBeGreaterThan(0.02);
     }
   });
 });

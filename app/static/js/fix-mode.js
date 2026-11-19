@@ -9564,6 +9564,8 @@ function _syncCorrectionsHeader() {
       verovioVersion: header.verovioVersion ?? null,
       verovioOptions: header.verovioOptions ?? null,
       alignmentParams: header.alignmentParams ?? null,
+      // Since 0.143.0: which score aligner made the base (absent = older).
+      ...(header.scoreAligner ? { scoreAligner: header.scoreAligner } : {}),
     };
   }
   header.corrections = serializeCorrections(_corrections, _correctionsBase);
