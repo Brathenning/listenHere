@@ -107,6 +107,20 @@ SCORE_DOWNSAMPLE = 2     # pool by this factor => coarse at 5 Hz
 SCORE_FINE_RATE_DEFAULT = 25  # Hz; the option scoreFineRate (0 = off)
 SCORE_FINE_RATE = SCORE_FINE_RATE_DEFAULT
 SCORE_FINE_SLACK_SEC = 2.0  # band half-width around the coarse path
+# The lead-in (0.147.0): seconds of silence put before the synthesised score,
+# within which the score's alignment may START (a subsequence DTW with the
+# score's entry free inside its pad; the reference span is consumed in full
+# from its start). detect_music_span errs outward on purpose, so the span can
+# begin up to ~2-3 s before the music, and with both corners pinned the first
+# note landed in that silence: early by a median 0.86 s on 45 of 57 (n)ASAP
+# piano performances, 2.0 s on Fledermaus VPO-2022. Measured 2026-11-19
+# (working-docs tools/score-open-ends-2026-11-19): first note median 0.00 s,
+# first-5-onset error 135 -> 71 ms, body unchanged; freeing the RECORDING's
+# ends instead failed (trap 2 of the open ends: the exit runs to its bound).
+# A multiple of 0.2 s (a coarse frame, whole fine frames): a pad of 37.5 fine
+# frames shifted every note by +12 ms. Used with the fine pass only.
+SCORE_LEAD_IN_SEC_DEFAULT = 3.0  # the option scoreLeadIn (0 = off)
+SCORE_LEAD_IN_SEC = SCORE_LEAD_IN_SEC_DEFAULT
 ONSET_N_FFT = 1024      # short window (46 ms) for sharp onset detection
 ONSET_SMOOTH = 5         # moving-average width (frames) over the onset curve; 1 = off
 # (An ONSET_WEIGHT constant lived here until 0.59.0: build_score_features scaled
@@ -148,7 +162,7 @@ REF_CHOICE_GUARD_SHARE = 0.1  # drop a candidate more targets than this would fa
 def _apply_options():
     """Override module constants from JS _opt_* globals (if set)."""
     global FEATURE_RATE, HOP, COARSE, SLACK
-    global SCORE_DOWNSAMPLE, SCORE_FINE_RATE
+    global SCORE_DOWNSAMPLE, SCORE_FINE_RATE, SCORE_LEAD_IN_SEC
     v = int(_opt_feature_rate) if int(_opt_feature_rate) > 0 else None
     if v:
         FEATURE_RATE = v
@@ -166,6 +180,9 @@ def _apply_options():
     # reset per batch so one run's choice never leaks into the next.
     v = int(globals().get('_opt_score_fine_rate', -1))
     SCORE_FINE_RATE = v if v >= 0 else SCORE_FINE_RATE_DEFAULT
+    # The lead-in likewise (0 = off), rounded to whole 0.2 s steps.
+    v = float(globals().get('_opt_score_lead_in', -1))
+    SCORE_LEAD_IN_SEC = round(v * 5.0) / 5.0 if v >= 0 else SCORE_LEAD_IN_SEC_DEFAULT
 
 
 def _stft_setup(audio, n_fft, hop):
@@ -1601,6 +1618,14 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
     synth_audio = synth_midi_audio(notes, tpq, tcs, midi_dur)
 
     fine_rate = int(SCORE_FINE_RATE)
+    # The lead-in (see SCORE_LEAD_IN_SEC): silence before the synthesised
+    # score; a_dur is the synth's length with it, and every score time is
+    # read lead seconds later on that axis.
+    lead = float(SCORE_LEAD_IN_SEC) if fine_rate > 0 else 0.0
+    a_dur = midi_dur
+    if lead > 0:
+        synth_audio = np.concatenate([np.zeros(int(round(lead * SR)), dtype=np.float32), synth_audio])
+        a_dur = len(synth_audio) / SR
     reportProgress("Score alignment: extracting chroma features...", None)
     sc_feat = compute_chroma_score(synth_audio)
     if fine_rate <= 0:
@@ -1625,12 +1650,21 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
     C_c = (np.float32(1.0) - sc_c.T @ rc_c).astype(np.float32)
     np.clip(C_c, 0, 2, out=C_c)
     del sc_c, rc_c
-    # Pass band=max(shape) to dtw_band → effectively unconstrained
-    wp_c = make_monotonic(dtw_band(C_c, max(C_c.shape)))
+    if lead > 0:
+        # The score may START anywhere inside its lead-in; the reference span
+        # is consumed in full from its start, the end stays pinned: the
+        # subsequence DTW of the audio pairs, transposed (rows = reference).
+        e_max = int(np.floor(lead * SCORE_FEATURE_RATE / SCORE_DOWNSAMPLE))
+        wp_c = _dtw_f32_rows(np.ascontiguousarray(C_c.T), open_ends=True,
+                             entry_max=e_max, exit_min=n_sc_c - 1)
+        wp_c = make_monotonic(wp_c[::-1])
+    else:
+        # Pass band=max(shape) to dtw_band → effectively unconstrained
+        wp_c = make_monotonic(dtw_band(C_c, max(C_c.shape)))
     del C_c
 
     # Coarse path → time mapping (each frame spans SCORE_DOWNSAMPLE * SCORE_HOP seconds)
-    sc_times_c = wp_c[0].astype(np.float64) * midi_dur / max(n_sc_c - 1, 1)
+    sc_times_c = wp_c[0].astype(np.float64) * a_dur / max(n_sc_c - 1, 1)
     rc_times_c = (wp_c[1].astype(np.float64) * span_dur / max(n_rc_c - 1, 1)
                   + span_from)
     del wp_c
@@ -1641,8 +1675,32 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
         reportProgress("Score alignment: fine DTW...", None)
         fs, fr, oa, ob, d = fine
         del fine
+        # With a lead-in the score starts where the coarse path entered it:
+        # cut its fine features there, on their own frame grid (the banded DTW
+        # seeds only its origin cell, so a cut is how it inherits a free start).
+        # The reference likewise, at the coarse path's first point after
+        # make_monotonic (which keeps the LAST point of the opening run where
+        # the reference advances while the score waits in its lead-in), on the
+        # full span's frame -> time map. This is the configuration measured.
+        a_lo = 0.0
+        b_lo, b_hi = span_from, span_to
+        if lead > 0 and fs.shape[1] >= 2 and fr.shape[1] >= 2:
+            step_a = a_dur / max(fs.shape[1] - 1, 1)
+            i0 = int(np.clip(np.floor(sc_times_c[0] / step_a), 0, fs.shape[1] - 2))
+            a_lo = i0 * step_a
+            fs = fs[:, i0:]; oa = oa[:, i0:]
+            n_b = fr.shape[1]
+            step_b = span_dur / max(n_b - 1, 1)
+            k0 = int(np.clip(np.floor((rc_times_c[0] - span_from) / step_b), 0, n_b - 2))
+            k1 = int(np.clip(np.ceil((rc_times_c[-1] - span_from) / step_b), k0 + 1, n_b - 1))
+            if k0 > 0 or k1 < n_b - 1:
+                b_lo, b_hi = span_from + k0 * step_b, span_from + k1 * step_b
+                fr = fr[:, k0:k1 + 1]; ob = ob[:, k0:k1 + 1]
         if fs.shape[1] < 2 or fr.shape[1] < 2:
             stamp = _score_aligner_stamp(None, "too short for the fine pass")
+            # The coarse map is on the lead-in axis: read score times there.
+            wf_c = wf
+            wf = lambda xq: wf_c(np.asarray(xq) + lead)
         else:
             def costfn(i, lo, hi):
                 cc = np.clip(1.0 - fs[:, i] @ fr[:, lo: hi + 1], 0, 2)
@@ -1652,10 +1710,12 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
             # band handling (corner seeding, bridged floors) the score pass
             # inherits. Never call _guided_band_dtw directly here: it seeds only
             # its origin cell.
-            wf = _fix_guided_warp(fs, fr, 0.0, midi_dur, span_from, span_to,
-                                  sc_times_c, rc_times_c, SCORE_FINE_SLACK_SEC,
-                                  "score fine pass", costfn)
-            stamp = _score_aligner_stamp(fine_rate, None, d)
+            wf_l = _fix_guided_warp(fs, fr, a_lo, a_dur, b_lo, b_hi,
+                                    sc_times_c, rc_times_c, SCORE_FINE_SLACK_SEC,
+                                    "score fine pass", costfn)
+            wf = (lambda xq: wf_l(np.asarray(xq) + lead)) if lead > 0 else wf_l
+            stamp = _score_aligner_stamp(fine_rate, None, d,
+                                         (lead, max(0.0, a_lo)) if lead > 0 else None)
         del fs, fr, oa, ob
 
     # Deduplicate chord notes: one entry per unique (onset_tick, offset_tick)
@@ -1718,7 +1778,7 @@ SCORE_ALIGNER_REFERENCES = [
 ]
 
 
-def _score_aligner_stamp(fine_rate, skipped=None, onset_shift=None):
+def _score_aligner_stamp(fine_rate, skipped=None, onset_shift=None, lead_in=None):
     """header.scoreAligner: what score_align actually ran, in Hz and
     seconds. Provenance only; nothing reads it back as an option (the
     options live in header.alignmentParams)."""
@@ -1744,6 +1804,10 @@ def _score_aligner_stamp(fine_rate, skipped=None, onset_shift=None):
             "decaySec": DLNCO_DECAY_SEC,
         }
         stamp["references"] = list(SCORE_ALIGNER_REFERENCES)
+    if lead_in:
+        # entrySec: where the fine pass began on the lead-in axis (score time +
+        # sec); at or past sec: the music began at once in the reference span.
+        stamp["leadIn"] = {"sec": float(lead_in[0]), "entrySec": round(float(lead_in[1]), 3)}
     return stamp
 
 
@@ -2495,6 +2559,7 @@ self.onmessage = async function (e) {
       pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
       // 0 = off is a value here; absent (-1) = the worker's default.
       pyodide.globals.set("_opt_score_fine_rate", opts.scoreFineRate ?? -1);
+      pyodide.globals.set("_opt_score_lead_in", opts.scoreLeadIn ?? -1);
       pyodide.globals.set("_ref_name_arg", refName);
       pyodide.globals.set("_peak_count_arg", peakCount || 0);
       pyodide.globals.set("_score_mode_arg", !!scoreMode);
@@ -2639,6 +2704,7 @@ json.dumps(_added)
       pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
       pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
       pyodide.globals.set("_opt_score_fine_rate", opts.scoreFineRate ?? -1);
+      pyodide.globals.set("_opt_score_lead_in", opts.scoreLeadIn ?? -1);
       pyodide.globals.set("_fix_ref_data", refSamples);
       pyodide.globals.set("_fix_midi_arg", meiMidi);
       const eventsJson = await pyodide.runPythonAsync(`

@@ -521,8 +521,9 @@ ref = (ref + 0.01 * np.random.default_rng(1).standard_normal(len(ref))).astype(n
 truth = [_tick_to_sec(k * tpq, tpq, tcs_b) for k in range(16)]
 
 def run(rate, ds):
-    global SCORE_FINE_RATE, SCORE_DOWNSAMPLE
+    global SCORE_FINE_RATE, SCORE_DOWNSAMPLE, SCORE_LEAD_IN_SEC
     SCORE_FINE_RATE, SCORE_DOWNSAMPLE = rate, ds
+    SCORE_LEAD_IN_SEC = 0.0  # the fine pass itself; the lead-in is 41.24's
     return score_align(midi, ref, '')
 off, on = run(0, 2), run(25, 2)
 
@@ -611,6 +612,54 @@ out['unknown'] = _raises(lambda: fix_realign_segment(i_a, truth[0], i_b, truth[1
 print(json.dumps(out))
 `;
 
+// The score lead-in (0.147.0): the ladder with the music at once and with
+// 2.5 s of low noise before it, the span the whole file; score_align with the
+// fine pass, lead-in 3 s and 0 (= 0.143.0); plus the option's semantics.
+const HARNESS_LEAD_IN = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+end_tick = max(n[1] for n in notes)
+tcs_b = [(0, 500000), (960, 375000)]
+music = synth_midi_audio(notes, tpq, tcs_b, _tick_to_sec(end_tick, tpq, tcs_b) + 0.5)
+truth = [_tick_to_sec(k * tpq, tpq, tcs_b) for k in range(16)]
+rng = np.random.default_rng(1)
+SCORE_FINE_RATE = 25
+SCORE_DOWNSAMPLE = 2
+out = {'truth': truth}
+for lead in (0.0, 2.5):
+    a = np.concatenate([np.zeros(int(lead * SR), dtype=np.float32), music])
+    a = (a + 0.01 * rng.standard_normal(len(a))).astype(np.float32)
+    for li in (0.0, 3.0):
+        SCORE_LEAD_IN_SEC = li
+        r = score_align(midi, a, '')
+        out['lead%g_li%g' % (lead, li)] = {'ref_onset': r['ref_onset'], 'synth_onset': r['synth_onset'],
+                                           'stamp': r['score_aligner'], 'lead': lead}
+# No lead-in without the fine pass.
+SCORE_FINE_RATE = 0
+SCORE_LEAD_IN_SEC = 3.0
+out['coarseOnly'] = score_align(midi, a, '')['score_aligner']
+opts = {}
+for v in (None, -1, 0, 3, 2.9, 1.5):
+    _opt_feature_rate = 0; _opt_coarse = 0; _opt_slack = 0; _opt_score_downsample = 0
+    if v is None:
+        globals().pop('_opt_score_lead_in', None)
+    else:
+        _opt_score_lead_in = v
+    _apply_options()
+    opts[str(v)] = SCORE_LEAD_IN_SEC
+out['opts'] = opts
+print(json.dumps(out))
+`;
+
 /** Run one python harness over align-worker.js's own PYTHON_CODE blob. */
 function execPython(harness: string, midiB64: string): any {
   const workerSrc = fs.readFileSync(
@@ -679,6 +728,12 @@ let scoreFineOut: any = null;
 function runScoreFineScenario(): any {
   if (!scoreFineOut) scoreFineOut = execPython(HARNESS_SCORE_FINE, buildMidiA().toString('base64'));
   return scoreFineOut;
+}
+
+let leadInOut: any = null;
+function runLeadInScenario(): any {
+  if (!leadInOut) leadInOut = execPython(HARNESS_LEAD_IN, buildMidiA().toString('base64'));
+  return leadInOut;
 }
 
 let refillOut: any = null;
@@ -1688,5 +1743,37 @@ test.describe('41. refill methods — worker', () => {
     // No correction at either end: the prior comes back.
     out.shiftNone.ref_onset.forEach((t: number, k: number) => expect(t).toBeCloseTo(late[k + 1], 12));
     expect(out.unknown).toBe(true);
+  });
+});
+
+test.describe('41. score lead-in — worker', () => {
+  test('41.24 the score lead-in: a quiet head no longer drags the first note into it, music at once stays at once, synth times stay unpadded, stamped; 0 = pinned; whole 0.2 s steps', async () => {
+    test.setTimeout(120_000);
+    const out = runLeadInScenario();
+    const truth: number[] = out.truth;
+    const err = (k: string, i: number) => out[k].ref_onset[i] - (truth[i] + out[k].lead);
+    // 2.5 s of noise before the music: pinned, the first note sits at the file's
+    // start; with the lead-in it finds the music (measured 2026-11-19: -2.5 s -> -28 ms).
+    expect(err('lead2.5_li0', 0)).toBeLessThan(-2.0);
+    expect(Math.abs(err('lead2.5_li3', 0))).toBeLessThan(0.06);
+    // Music at once: the lead-in does not push the first note into the music.
+    expect(Math.abs(err('lead0_li0', 0))).toBeLessThan(0.06);
+    expect(Math.abs(err('lead0_li3', 0))).toBeLessThan(0.06);
+    for (const k of ['lead0_li3', 'lead2.5_li3']) {
+      expectMonotonic(out[k].ref_onset);
+      for (let i = 0; i < N_NOTES; i++) expect(Math.abs(err(k, i)), `${k} event ${i}`).toBeLessThan(0.08);
+      // synth_onset is the score's own time, never shifted by the lead-in.
+      expect(out[k].synth_onset).toEqual(out['lead0_li0'].synth_onset);
+      expect(out[k].stamp.leadIn.sec).toBe(3);
+      expect(out[k].stamp.leadIn.entrySec).toBeGreaterThanOrEqual(0);
+      // Up to one coarse frame past the lead-in: the music began at once.
+      expect(out[k].stamp.leadIn.entrySec).toBeLessThanOrEqual(3.2);
+    }
+    expect(out['lead0_li0'].stamp.leadIn).toBeUndefined();
+    // No lead-in without the fine pass.
+    expect(out.coarseOnly.leadIn).toBeUndefined();
+    expect(out.coarseOnly.method).toBe('chroma-dtw');
+    // Unset / negative = the default 3 s, 0 = off, else whole 0.2 s steps.
+    expect(out.opts).toEqual({ None: 3, '-1': 3, '0': 0, '3': 3, '2.9': 2.8, '1.5': 1.6 });
   });
 });

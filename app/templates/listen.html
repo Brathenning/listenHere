@@ -219,6 +219,14 @@
                   </select>
                   <span class="align-param-help">Refines the score alignment at 25 Hz around the coarse pass using note onsets (DLNCO features, after Ewert, Müller &amp; Grosche 2009). Off = the coarse pass alone, as before 0.143.0.</span>
                 </div>
+                <div class="align-param-row align-score-param">
+                  <label for="align-param-score-lead">Score lead-in</label>
+                  <select id="align-param-score-lead">
+                    <option value="3">3 s</option>
+                    <option value="0">Off</option>
+                  </select>
+                  <span class="align-param-help">Lets the score's first note find where the music starts in the reference, up to a few seconds after the start of its usable span. Used with the fine pass. Off = the first note pinned to the span start, as in 0.143.0.</span>
+                </div>
               </div>
             </details>
           </div>

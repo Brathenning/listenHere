@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.147.0 -- Score alignment: a lead-in for the first note
+
+* The score pass puts 3 s of silence before the synthesised score and lets the score's alignment start anywhere within it (a subsequence DTW with the score's entry free, the reference span consumed in full), so the first note no longer lands in the quiet head that the open-ends span keeps on purpose. Against ground truth: Fledermaus VPO-2022's first note −2.0 s → +78 ms; on 57 (n)ASAP piano performances the first note moves from a median 0.86 s early (45 of 57 early) to 0.00 s, and the first five onsets' error from 135 to 73 ms; the rest of each piece is unchanged.
+* Advanced → "Score lead-in" (3 s / Off), used with the fine pass; Off gives 0.145.0's score alignment exactly. `header.scoreAligner.leadIn` records it.
+* Testing: 41.24 new, 41.20 runs without the lead-in; specs 17, 41, 42, 43, and 44 pass (185, Chromium). The worker reproduces the measurement harness exactly on both ground truths. On a recording whose music starts at once, the worst note of the synthetic test piece goes from 30 to 54 ms.
+
 ### 0.145.0 -- Correction: the refill follows the fine pass
 
 * Correction mode's score refill has three methods: shift (no DTW: the stored alignment keeps its shape and takes each anchor's correction, fading as exp(−distance / 1 s)), onsets (the DTW with the 0.143.0 fine pass's DLNCO onset cost, after Ewert, Müller & Grosche, ICASSP 2009), and chroma (as before). Edits → Refill chooses; auto, the default, takes shift on alignments stamped with the fine pass and onsets on older ones. The choice sticks for the page.
