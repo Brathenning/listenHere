@@ -538,7 +538,8 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     expect(
       await page.locator('.fix-score-svg g.note').count(),
     ).toBeGreaterThan(20);
-    await expect(page.locator('.fix-page-label')).toHaveText(/Page 1 \/ \d+/);
+    await expect(page.locator('.fix-page-label')).toHaveText(/^Page\s*\/ \d+$/);
+    await expect(page.locator('#fix-page-input')).toHaveValue('1');
     const st = await fixState(page);
     expect(st.mode).toBe('score-ref');
     expect(st.refFile).toBe(REF_ROW);
@@ -650,7 +651,212 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     expect(after.selGroup).toBeGreaterThan(before.pageGroupCount - 1);
     // …and the strip viewport moved forward in reference time.
     expect(after.stripWindow.t0).toBeGreaterThan(before.stripWindow.t0);
-    await expect(page.locator('.fix-page-label')).toHaveText(/Page 2 \/ \d+/);
+    await expect(page.locator('#fix-page-input')).toHaveValue('2');
+  });
+
+  test('42.40 first / last page sit at the transport\'s two ends in correction mode only; Home and End do the same; the page number is a field that takes a typed page', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await expect(page.locator('#fix-page-first')).toBeHidden();
+    await expect(page.locator('#fix-page-last')).toBeHidden();
+    await enterFix(page, REF_ROW);
+    const n = (await fixState(page)).pageCount;
+    expect(n).toBeGreaterThan(2);
+    // Outermost in the row, spaced like their neighbours (skip-back sits
+    // flush against seek-back, so first page sits flush against skip-back).
+    const ends = await page.evaluate(() => {
+      const r = (id: string) => document.getElementById(id)!.getBoundingClientRect();
+      return {
+        before: r('skip-back').left - r('fix-page-first').right,
+        after: r('fix-page-last').left - r('skip-end').right,
+        inner: r('seek-back').left - r('skip-back').right,
+      };
+    });
+    expect(Math.abs(ends.before - ends.inner)).toBeLessThan(1);
+    expect(Math.abs(ends.after - ends.inner)).toBeLessThan(1);
+    const at = async (p: number) => {
+      await page.waitForFunction((p) => (window as any)._listenTest.fix.page === p, p);
+      await expect(page.locator('#fix-page-input')).toHaveValue(String(p));
+      expect((await fixState(page)).selPage).toBe(p); // the selection lands on that page
+    };
+    await page.click('#fix-page-last');
+    await at(n);
+    await page.click('#fix-page-first');
+    await at(1);
+    await page.keyboard.press('End');
+    await at(n);
+    await page.keyboard.press('Home');
+    await at(1);
+    // The field: a typed page and Enter goes there; out of range clamps;
+    // Escape abandons the typing and shows the current page again.
+    await page.fill('#fix-page-input', '2');
+    await page.press('#fix-page-input', 'Enter');
+    await at(2);
+    await page.fill('#fix-page-input', '999');
+    await page.press('#fix-page-input', 'Enter');
+    await at(n);
+    await page.fill('#fix-page-input', '1');
+    await page.press('#fix-page-input', 'Escape');
+    await expect(page.locator('#fix-page-input')).toHaveValue(String(n));
+    expect((await fixState(page)).page).toBe(n);
+    // Typing in the field does not reach the correction screen's keys.
+    await page.fill('#fix-page-input', '');
+    await page.press('#fix-page-input', 'Home');
+    expect((await fixState(page)).page).toBe(n);
+    await page.press('#fix-page-input', 'Escape');
+    await page.click('#fix-exit');
+    await expect(page.locator('#fix-page-first')).toBeHidden();
+  });
+
+  test('42.41 the chooser reports each row\'s total markers once the prewarm has built the onset groups: the same count for step 1 and every recording, the count a session then shows; before that the rows read as before', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await page.click('#fix-chooser-open');
+    await page.waitForSelector('.fix-chooser');
+    const totals = () =>
+      page.evaluate(() => ({
+        ready: (window as any)._listenTest.fix.prewarmReady,
+        spans: [...document.querySelectorAll('.fix-chooser-total')].map((el) => ({
+          hidden: (el as HTMLElement).hidden,
+          text: el.textContent,
+          row: (el.closest('.fix-chooser-row') as HTMLElement).dataset.file ?? 'step1',
+        })),
+      }));
+    const before = await totals();
+    // Step 1 and every recording with a grid on the reference raster.
+    expect(before.spans.map((s) => s.row).sort()).toEqual(
+      ['step1', 'audio-a.mp3', 'audio-c.mp3', 'audio-short.mp3'].sort(),
+    );
+    if (!before.ready) {
+      for (const s of before.spans) expect(s).toMatchObject({ hidden: true, text: '' });
+    }
+    // The prewarm lands while the chooser is open: the totals fill in place.
+    await page.waitForFunction(() => (window as any)._listenTest.fix.prewarmReady);
+    await expect(page.locator('.fix-chooser-total').first()).toBeVisible();
+    const after = await totals();
+    const text = after.spans[0].text!;
+    expect(text).toMatch(/^\d{1,3}(,\d{3})* markers ·$/);
+    for (const s of after.spans) expect(s).toMatchObject({ hidden: false, text });
+    await expect(page.locator('.fix-chooser-step[data-step="1"] .fix-chooser-count')).toHaveText(
+      'not yet reviewed',
+    );
+    // The count is the ticks a session shows.
+    await page.click('#fix-chooser-open-ref');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.active);
+    const n = (await fixState(page)).groupCount;
+    expect(text).toBe(`${n.toLocaleString('en-US')} markers ·`);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+  });
+
+  test('42.42 "Go to section" lists the MEI\'s sections (not a wrapper around the whole score) and jumps to a section\'s first onset, the playhead the usual run-up before it; the menu names the section being played, but holds still while in use; names are @label, else @xml:id, else the measure range', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page, REF_ROW);
+    // The fixture: one wrapper section around sections A1, B, and A2.
+    const opts = await page.$$eval('#fix-section option', (os) =>
+      os.map((o) => ({ value: (o as HTMLOptionElement).value, text: o.textContent })),
+    );
+    expect(opts).toEqual([
+      { value: '', text: 'Go to section…' },
+      { value: '0', text: 'A1' },
+      { value: '1', text: 'B' },
+      { value: '2', text: 'A2' },
+    ]);
+    expect((await fixState(page)).page).toBe(1);
+    // On entry the menu already names the section being played.
+    await expect(page.locator('#fix-section')).toHaveValue('0');
+    // B: its first onset is selected and the playhead sits the usual run-up
+    // before it; the menu then names B.
+    // (The seek needs the audition buffer.)
+    await page.waitForFunction(() => (window as any)._listenTest.fix.aud?.ready);
+    await page.selectOption('#fix-section', '1');
+    let st = await fixState(page);
+    expect(st.lastSectionJump.name).toBe('B');
+    const ixB = st.lastSectionJump.groupIx;
+    expect(ixB).toBeGreaterThan(0);
+    expect(st.selGroup).toBe(ixB);
+    expect(st.page).toBe(st.selPage);
+    expect(st.page).toBeGreaterThan(1);
+    const pos = await page.evaluate(() => (window as any)._listenTest.fixCtl.pos());
+    expect(pos).toBeCloseTo(st.selT - 0.5, 2);
+    await expect(page.locator('#fix-section')).toHaveValue('1');
+    // The onset before B's first lies in A1: the menu follows the selection
+    // (which the playback follower keeps at the playhead).
+    const cues = (await fixState(page)).sectionCues;
+    await page.keyboard.press('ArrowLeft');
+    expect((await fixState(page)).selGroup).toBe(ixB - 1);
+    await expect(page.locator('#fix-section')).toHaveValue('0');
+    // …with a brief cue that it changed.
+    expect((await fixState(page)).sectionCues).toBe(cues + 1);
+    await expect(page.locator('#fix-section')).toHaveClass(/fix-section-cue/);
+    // A2 lies further on.
+    await page.selectOption('#fix-section', '2');
+    st = await fixState(page);
+    expect(st.lastSectionJump.name).toBe('A2');
+    const ixA2 = st.lastSectionJump.groupIx;
+    expect(ixA2).toBeGreaterThan(ixB);
+    const tA2 = st.selT;
+    await expect(page.locator('#fix-section')).toHaveValue('2');
+    // In use, the menu holds still: playback from B into A2 leaves it on its
+    // prompt (so re-picking the section being played still jumps), and
+    // Escape lets go of it — without leaving the session — and it catches up.
+    await page.keyboard.press('ArrowLeft');
+    await page.focus('#fix-section');
+    await expect(page.locator('#fix-section')).toHaveValue('');
+    await page.evaluate((t) => {
+      const c = (window as any)._listenTest.fixCtl;
+      c.seek(t - 0.3);
+      c.play();
+    }, tA2);
+    await page.waitForFunction(
+      (ix) => (window as any)._listenTest.fix.selGroup >= ix,
+      ixA2,
+      { timeout: 5000 },
+    );
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await expect(page.locator('#fix-section')).toHaveValue('');
+    const cuesHeld = (await fixState(page)).sectionCues;
+    await page.press('#fix-section', 'Escape');
+    expect((await fixState(page)).active).toBe(true);
+    await expect(page.locator('#fix-section')).toHaveValue('2');
+    // Back from its prompt is the user's own change: no cue.
+    expect((await fixState(page)).sectionCues).toBe(cuesHeld);
+    // A1 goes back to the start.
+    await page.selectOption('#fix-section', '0');
+    expect((await fixState(page)).page).toBe(1);
+    // The naming rules, on small MEI documents.
+    const names = await page.evaluate(async () => {
+      const { meiSections } = await import('/static/js/engine/mei-sections.js');
+      const m = (id: string, n?: string) =>
+        `<measure xml:id="${id}"${n ? ` n="${n}"` : ''}/>`;
+      const doc = (body: string) =>
+        `<?xml version="1.0"?><mei xmlns="http://www.music-encoding.org/ns/mei"><music><body><mdiv><score>${body}</score></mdiv></body></music></mei>`;
+      return meiSections(
+        doc(
+          '<section xml:id="whole">' +
+            `<section label="Intro" xml:id="s1">${m('m1', '1')}${m('m2', '2')}</section>` +
+            `<section xml:id="s2"><section>${m('m3', '3')}${m('m4', '7')}</section>${m('m5', '8')}</section>` +
+            `<section>${m('m6', '9')}</section>` +
+            '<section xml:id="empty"/>' +
+            '</section>',
+        ),
+      );
+    });
+    expect(names).toEqual([
+      { name: 'Intro', depth: 0, firstMeasureId: 'm1', lastMeasureId: 'm2' },
+      { name: 's2', depth: 0, firstMeasureId: 'm3', lastMeasureId: 'm5' },
+      { name: 'mm. 3–7', depth: 1, firstMeasureId: 'm3', lastMeasureId: 'm4' },
+      { name: 'm. 9', depth: 0, firstMeasureId: 'm6', lastMeasureId: 'm6' },
+    ]);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
   });
 
   test('42.21 the strip WAVEFORM gets the page window on first entry, not only after a page turn', async ({
@@ -1696,9 +1902,15 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
         regionOverflowY: getComputedStyle(navBody).overflowY,
         regionNeedsScroll: navBody.scrollHeight > navBody.clientHeight + 1,
         magnetW: Math.round(btn.width),
-        // "detected / perceived" on ONE line: both labels share a top edge.
+        // "detected / perceived" on ONE line: both labels share a top edge;
+        // so do "synth / clicks".
         radioTops: new Set(
-          Array.from(document.querySelectorAll('.fix-snap-target-row label')).map((l) =>
+          Array.from(document.querySelectorAll('#fix-snap-target label')).map((l) =>
+            Math.round(l.getBoundingClientRect().top),
+          ),
+        ).size,
+        earTops: new Set(
+          Array.from(document.querySelectorAll('#fix-ear label')).map((l) =>
             Math.round(l.getBoundingClientRect().top),
           ),
         ).size,
@@ -1719,6 +1931,7 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
       };
     });
     expect(fit.radioTops).toBe(1);
+    expect(fit.earTops).toBe(1);
     expect(fit.exit.round).toBe('50%');
     expect(fit.exit.w).toBe(fit.exit.h);
     expect(fit.exit.nearTop).toBe(true);
@@ -1858,5 +2071,38 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
       ((window as any).__fixStub?.posted ?? []).some((p: any) => p.type === 'fix_begin'),
     );
     expect(await page.evaluate(() => (window as any).__realWorkers)).toBe(1);
+  });
+
+  test('42.39 the worker script is fetched once, before any recording, and the worker starts from it in memory', async ({
+    page,
+  }) => {
+    // Firefox on an HTTP/1.1 server gives a host 6 connections, and the
+    // recordings' <audio> elements keep theirs: a worker script requested
+    // after them waited forever ("Step 2/4: align runtime…"). Chromium cannot
+    // reproduce the starvation, so this pins the order that prevents it.
+    const order: string[] = [];
+    page.on('request', (r) => {
+      const p = new URL(r.url()).pathname;
+      if (p.endsWith('/js/align-worker.js')) order.push('worker');
+      else if (/\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(p)) order.push('audio');
+    });
+    await page.addInitScript(() => {
+      const W = window.Worker;
+      (window as any).__workerUrls = [];
+      (window as any).Worker = function (url: string, opts: any) {
+        (window as any).__workerUrls.push(String(url));
+        return new W(url, opts);
+      };
+    });
+    await gotoFixMode(page);
+    await page.waitForFunction(() => (window as any).__workerUrls.length > 0, undefined, {
+      timeout: 15_000,
+    });
+    expect(order).toContain('audio');
+    expect(order[0]).toBe('worker');
+    expect(order.filter((x) => x === 'worker')).toHaveLength(1);
+    expect(await page.evaluate(() => (window as any).__workerUrls)).toEqual([
+      expect.stringMatching(/^blob:/),
+    ]);
   });
 });

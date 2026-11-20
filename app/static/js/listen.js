@@ -4169,7 +4169,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (alignPanel) {
       alignPanel.style.display = "flex";
       configureAlign({
-        workerUrl: root + "js/align-worker.js",
         onComplete: onAlignmentComplete,
       });
       initAlignPanel();
@@ -4178,7 +4177,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Manage recordings → Add Recordings (0.97.0)
   initAddRecordings({
-    workerUrl: root + "js/align-worker.js",
     synthKey: SYNTH_MEI_KEY,
     getAlignment: () => loadedAlignmentJSON,
     // In local-files mode the reference has no URL to fall back on: if its
@@ -4543,7 +4541,9 @@ document.addEventListener("DOMContentLoaded", () => {
       case "fix-grid-anchor":
         return `alignment anchor (${entry.file})`;
       case "fix-anchor-batch":
-        return `alignment anchors (${entry.count})`;
+        return entry.op === "unanchor"
+          ? `remove alignment anchors (${entry.count})`
+          : `alignment anchors (${entry.count})`;
       case "fix-gap":
         return "unscored-audio gap";
       case "fix-ref-tick":
@@ -4927,6 +4927,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
     wavesurfers[currentAudioIx].seekTo(1);
   });
+
+  // First / last page: correction mode only (hidden otherwise).
+  document.getElementById("fix-page-first").addEventListener("click", () => fixTransport("page-first"));
+  document.getElementById("fix-page-last").addEventListener("click", () => fixTransport("page-last"));
 
   // mark button — places a new marker, or removes the active marker when
   // paused at one in close-listening mode

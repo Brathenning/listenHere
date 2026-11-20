@@ -20,14 +20,23 @@ type Render = { ch0: number[]; ch1: number[] };
  *  returns both output channels (as plain arrays). */
 async function renderWorklet(
   page: Page,
-  o: { seconds: number; ch0: 'sine220' | 'silence'; ref?: 'bursts440'; rg?: number[]; tg?: number[] },
+  o: {
+    seconds: number;
+    ch0: 'sine220' | 'silence';
+    ref?: 'bursts440';
+    rg?: number[];
+    tg?: number[];
+    clicks?: number[]; // channel 1 as a click track: unit impulses at these times
+    held?: boolean;
+  },
 ): Promise<Render> {
   return page.evaluate(
     async ({ o, SR, url }) => {
       const n = Math.round(o.seconds * SR);
       const ch0 = new Float32Array(n);
       if (o.ch0 === 'sine220') for (let i = 0; i < n; i++) ch0[i] = 0.5 * Math.sin((2 * Math.PI * 220 * i) / SR);
-      const ch1 = new Float32Array(n); // the (silent) synth ear
+      const ch1 = new Float32Array(n); // the (silent) synth ear, or clicks
+      for (const t of o.clicks ?? []) ch1[Math.round(t * SR)] = 1;
       let warp = null;
       if (o.ref) {
         // Reference: 440 Hz bursts at 0.5 s and 1.5 s, 0.2 s each, in 2.5 s.
@@ -44,7 +53,7 @@ async function renderWorklet(
       const node = new AudioWorkletNode(ctx, 'fix-stretch', {
         numberOfInputs: 0,
         outputChannelCount: [2],
-        processorOptions: { ch0, ch1, srcRate: SR, warp, playing: true },
+        processorOptions: { ch0, ch1, srcRate: SR, warp, held: !!o.held, playing: true },
       });
       node.connect(ctx.destination);
       const buf = await ctx.startRendering();
@@ -145,5 +154,37 @@ test.describe('60: the warped reference ear (stretch worklet)', () => {
     // A ratio of 3 is inside the band: the bursts are there (0.5 s → 0.167 s).
     const three = await renderWorklet(page, { seconds: 2, ch0: 'silence', ref: 'bursts440', rg: [0, 2.5], tg: [0, 2.5 / 3] });
     expect(rms(three.ch1, 0.15, 0.25)).toBeGreaterThan(0.1);
+  });
+
+  test('60.4 Clicks over the warp: with `held` channel 1 plays its held copy — the click track — sample-locked to the recording at full speed, and none of the warped reference', async ({
+    page,
+  }) => {
+    const r = await renderWorklet(page, {
+      seconds: 2.5,
+      ch0: 'sine220',
+      ref: 'bursts440',
+      rg: [0, 2.5],
+      tg: [0, 2.5],
+      clicks: [0.5, 1.25, 2.0],
+      held: true,
+    });
+    // Each click comes out on its own sample (100% speed tiles the grains
+    // exactly: Hann at 50 % sums to 1), and nothing else does.
+    const peaks: number[] = [];
+    for (let i = 0; i < r.ch1.length; i++) if (Math.abs(r.ch1[i]) > 0.5) peaks.push(i);
+    expect(peaks).toEqual([0.5, 1.25, 2.0].map((t) => Math.round(t * SR)));
+    for (const i of peaks) expect(r.ch1[i]).toBeCloseTo(1, 4);
+    // The reference's 440 Hz bursts (at 0.5 s and 1.5 s) are not there.
+    expect(rms(r.ch1, 1.5, 1.7)).toBeLessThan(1e-6);
+    // Without `held`, the same warp plays the reference.
+    const warped = await renderWorklet(page, {
+      seconds: 2.5,
+      ch0: 'sine220',
+      ref: 'bursts440',
+      rg: [0, 2.5],
+      tg: [0, 2.5],
+      clicks: [0.5, 1.25, 2.0],
+    });
+    expect(rms(warped.ch1, 1.55, 1.65)).toBeGreaterThan(0.2);
   });
 });
