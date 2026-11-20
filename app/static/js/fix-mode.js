@@ -222,6 +222,39 @@ function _validDetector(d) {
     ? { hop: d.hop, smooth: d.smooth }
     : null;
 }
+/**
+ * The score refill's method (0.145.0; the worker's fix_realign_segment):
+ * 'shift' keeps the stored alignment and takes the anchors' corrections,
+ * fading over about a second; 'dlnco' re-runs the banded DTW with the onset
+ * cost of the 0.143.0 score fine pass; 'chroma' is the DTW of 0.144 and
+ * before. 'auto' picks by the alignment's header.scoreAligner: shift where the
+ * wizard's fine pass made the table, dlnco on older tables. Measured against
+ * 2,115 human anchors on 2026-11-19 (working-docs tools/refill-onsets-
+ * 2026-11-19): on a fine-pass table chroma made it worse around every anchor.
+ * Sticky for the page, like the onset detector; the methods a session used are
+ * saved as header.corrections.refill.
+ */
+const REFILL_CHOICES = ["auto", "shift", "dlnco", "chroma"];
+const REFILL_STORE_KEY = "listenHere_fixRefill";
+const REFILL_SHIFT_TAU_SEC = 1; // = the worker's FIX_SHIFT_TAU_SEC, for the record
+let _refillChoice = (() => {
+  try {
+    const v = localStorage.getItem(REFILL_STORE_KEY);
+    return REFILL_CHOICES.includes(v) ? v : "auto";
+  } catch (_) {
+    return "auto";
+  }
+})();
+/** The methods this session's score refills ran with (for the record). */
+let _refillMethodsUsed = new Set();
+/** What 'auto' means for the loaded alignment. */
+function _autoRefillMethod() {
+  const m = loadedAlignmentJSON?.header?.scoreAligner?.method;
+  return m === "chroma-dtw+dlnco-fine" ? "shift" : "dlnco";
+}
+function _refillMethod() {
+  return _refillChoice === "auto" ? _autoRefillMethod() : _refillChoice;
+}
 /** Score-less ticks: detected with the menu's settings, which the record of
  *  the session being detected for then names. */
 function _refTickCfg() {
@@ -1634,6 +1667,7 @@ export function fixModePrewarm() {
   // A (re)loaded piece invalidates the piece-scoped correction state too.
   _corrections = createCorrections();
   _refTickDetector = null;
+  _refillMethodsUsed = new Set();
   _pristine = null;
   _lastAnnounce = null;
   _correctionsBase = null;
@@ -1655,6 +1689,10 @@ export function fixModePrewarm() {
       _corrections = state;
       _correctionsBase = base;
       _refTickDetector = _validDetector(record.refTickDetector);
+      // Additive since 0.145.0: a record without it was refilled by chroma.
+      for (const m of record.refill?.methods || []) {
+        if (REFILL_CHOICES.includes(m) && m !== "auto") _refillMethodsUsed.add(m);
+      }
       // A score-less session reopens on the detector its free ticks came from.
       if (_scoreless() && (record.refTickDetector || hasTargetAnchors(state) || state.refTicks?.length)) {
         _onsetSettings = _refTickDetector || { hop: LANE_HOP, smooth: ONSET_SMOOTH };
@@ -2918,7 +2956,40 @@ function _buildDom(contentEl, waveformsEl) {
   bendLabel.textContent = "Bend";
   bendLabel.title = bendSel.title;
   bendRow.append(bendLabel, bendSel);
+  // How the score refill fills the span between anchors (see _refillChoice).
+  const refillNames = { shift: "shift", dlnco: "onsets", chroma: "chroma" };
+  const refillSel = mkSelect(
+    "fix-refill",
+    "How a re-alignment refills the notes between anchors. Shift: the stored " +
+      "alignment keeps its shape and follows each fix over about a second. Onsets: a " +
+      "fresh match of chroma and note onsets (DLNCO). Chroma: the match of 0.144 and " +
+      "before. Auto: shift where the alignment wizard's fine pass made the alignment " +
+      "(0.143.0 on), else onsets",
+    REFILL_CHOICES.map((c) => [
+      c,
+      c === "auto" ? `auto (${refillNames[_autoRefillMethod()]})` : refillNames[c],
+    ]),
+    _refillChoice,
+    (v) => {
+      _refillChoice = v;
+      try {
+        localStorage.setItem(REFILL_STORE_KEY, v);
+      } catch (_) {}
+    },
+  );
+  const refillRow = document.createElement("div");
+  refillRow.className = "fix-nav-row fix-refill-row";
+  const refillLabel = document.createElement("label");
+  refillLabel.htmlFor = "fix-refill";
+  refillLabel.textContent = "Refill";
+  refillLabel.title = refillSel.title;
+  refillRow.append(refillLabel, refillSel);
+  if (f.mode === "audio") {
+    refillSel.disabled = true;
+    refillSel.title = "The refill choice applies to the score ↔ reference correction.";
+  }
   fsEdits.body.append(undoRow, gapRow, anchorRow, autoRow, realignRow, horizonRow, bendRow);
+  if (!f.scoreless) fsEdits.body.append(refillRow);
   navBody.append(title, chip, fsScore.fs, fsPlayback.fs, fsSnap.fs, fsLanes.fs, fsEdits.fs);
   _borrowNavActions({ "undo-btn": undoRow, "redo-btn": undoRow }, fsEdits.body);
 
@@ -7409,11 +7480,17 @@ function _setSounding(on) {
  * and came back where the old alignment had them: the tick moved, the synth
  * still sounded that note late (Donau m. 6, the horn under a coinciding
  * tremolo stroke, 2026-10-21).
+ *
+ * The method is _refillMethod()'s. priorA / priorB are the two bounding
+ * events' times BEFORE this edit, which the 'shift' method needs to know what
+ * each anchor corrected (omitted: no correction at that end, as for an anchor
+ * that did not move, a horizon note, or a corner).
  */
-async function _realignSegmentViaWorker(segment, priorRef) {
+async function _realignSegmentViaWorker(segment, priorRef, priorA = null, priorB = null) {
   const voices = _anchorVoiceCount(segment);
   const prior = priorRef.slice();
   for (let k = 0; k < voices; k++) prior[k] = segment.tA;
+  const method = _refillMethod();
   const worker = _ensureWorker();
   const reply = await new Promise((resolve, reject) => {
     _pendingRealign = { resolve, reject };
@@ -7424,9 +7501,13 @@ async function _realignSegmentViaWorker(segment, priorRef) {
       iB: segment.iB,
       tB: segment.tB,
       priorRef: prior,
+      method,
+      priorA: Number.isFinite(priorA) ? priorA : null,
+      priorB: Number.isFinite(priorB) ? priorB : null,
     });
   });
   for (let k = 0; k < voices; k++) reply.result.ref_onset[k] = segment.tA;
+  _refillMethodsUsed.add(method);
   return reply;
 }
 
@@ -8037,8 +8118,15 @@ async function _commitAnchor(groupIx, t, kind) {
         if (seg.local) localFilled++;
       } else {
         const priorRef = refOn.slice(seg.iA + 1, seg.iB);
+        // The fixed tick's time before this edit: what its anchor corrected.
+        const was = entry.selfBefore.on;
         try {
-          const reply = await _realignSegmentViaWorker(seg, priorRef);
+          const reply = await _realignSegmentViaWorker(
+            seg,
+            priorRef,
+            seg.iA === i ? was : null,
+            seg.iB === i ? was : null,
+          );
           if (_fix !== f) throw new Error("fix mode exited during the realign");
           res = reply.result;
           realigned++;
@@ -8147,7 +8235,7 @@ async function _commitAnchor(groupIx, t, kind) {
   const pending = !_autoRealign && !entry.floating;
   if (pending) {
     entry.pendingAhead = true;
-    _addPending(f, { i });
+    _addPending(f, { i, before: entry.selfBefore.on });
   }
   // The commit's console trail. Every "the note I fixed does not sound" report
   // so far has come down to one of three numbers: the note's duration (a
@@ -8559,7 +8647,9 @@ async function _realignPending() {
         res = findGap(_corrections, seg.iA) ? _gapSpanFill(seg, { i: -1 }) : _linearFill(seg);
       } else {
         try {
-          const reply = await _realignSegmentViaWorker(seg, refOn.slice(seg.iA + 1, seg.iB));
+          // The pending fix's time before it was made (recorded with it).
+          const was = entry.keys.find((k) => k.i === a.i)?.before;
+          const reply = await _realignSegmentViaWorker(seg, refOn.slice(seg.iA + 1, seg.iB), was);
           if (_fix !== f) throw new Error("fix mode exited during the realign");
           res = reply.result;
           realigned++;
@@ -8731,7 +8821,10 @@ function _sessionOwns(f, entry) {
 function _pendingOnHop(entry, redo) {
   const f = _fix;
   if (!entry.pendingAhead || !f || !_sessionOwns(f, entry)) return;
-  const key = entry.type === "fix-grid-anchor" ? { refT: entry.refT } : { i: entry.i };
+  const key =
+    entry.type === "fix-grid-anchor"
+      ? { refT: entry.refT }
+      : { i: entry.i, before: entry.selfBefore?.on };
   if (redo) _addPending(f, key);
   else _dropPending(f, key);
 }
@@ -9570,6 +9663,10 @@ function _syncCorrectionsHeader() {
   }
   header.corrections = serializeCorrections(_corrections, _correctionsBase);
   if (_refTickDetector) header.corrections.refTickDetector = { ..._refTickDetector };
+  if (_refillMethodsUsed.size) {
+    header.corrections.refill = { methods: [..._refillMethodsUsed].sort() };
+    if (_refillMethodsUsed.has("shift")) header.corrections.refill.shiftTauSec = REFILL_SHIFT_TAU_SEC;
+  }
 }
 
 /** Where an entry happened, for announcements: near its bar, or — score-less —

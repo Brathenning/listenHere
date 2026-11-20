@@ -568,6 +568,49 @@ print(json.dumps({
 }))
 `;
 
+// The refill's methods (0.145.0): chroma (the default, unchanged), dlnco (the
+// fine pass's onset cost), and shift (no DTW: the prior plus the anchors'
+// corrections, fading over FIX_SHIFT_TAU_SEC). The ladder under the
+// reference's tempo map; the prior is the truth 0.1 s late.
+const HARNESS_REFILL = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+end_tick = max(n[1] for n in notes)
+tcs_b = [(0, 500000), (960, 375000)]
+ref = synth_midi_audio(notes, tpq, tcs_b, _tick_to_sec(end_tick, tpq, tcs_b) + 0.5)
+ref = (ref + 0.01 * np.random.default_rng(1).standard_normal(len(ref))).astype(np.float32)
+truth = [_tick_to_sec(k * tpq, tpq, tcs_b) for k in range(16)]
+fix_begin(ref, midi)
+late = [t + 0.1 for t in truth]
+i_a, i_b = 0, 15
+pr = late[1:15]
+
+def _raises(fn):
+    try:
+        fn()
+        return False
+    except Exception:
+        return True
+
+out = {'truth': truth, 'late': late, 'tau': FIX_SHIFT_TAU_SEC}
+out['default'] = fix_realign_segment(i_a, truth[0], i_b, truth[15], pr)
+for m in ('chroma', 'dlnco', 'shift'):
+    out[m] = fix_realign_segment(i_a, truth[0], i_b, truth[15], pr, None, None, m, late[0], late[15])
+# Shift with no correction at either end gives the prior back.
+out['shiftNone'] = fix_realign_segment(i_a, late[0], i_b, late[15], pr, None, None, 'shift')
+out['unknown'] = _raises(lambda: fix_realign_segment(i_a, truth[0], i_b, truth[15], pr, None, None, 'nope'))
+print(json.dumps(out))
+`;
+
 /** Run one python harness over align-worker.js's own PYTHON_CODE blob. */
 function execPython(harness: string, midiB64: string): any {
   const workerSrc = fs.readFileSync(
@@ -636,6 +679,12 @@ let scoreFineOut: any = null;
 function runScoreFineScenario(): any {
   if (!scoreFineOut) scoreFineOut = execPython(HARNESS_SCORE_FINE, buildMidiA().toString('base64'));
   return scoreFineOut;
+}
+
+let refillOut: any = null;
+function runRefillScenario(): any {
+  if (!refillOut) refillOut = execPython(HARNESS_REFILL, buildMidiA().toString('base64'));
+  return refillOut;
 }
 
 let targetOut: any = null;
@@ -1146,7 +1195,7 @@ test.describe('41. alignment correction — worker segment realign', () => {
   test('41.8 empty interiors, error paths, and the adaptive hop cap', async () => {
     const out = runWorkerScenario();
     // Consecutive anchors: nothing to refill, no DTW run.
-    expect(out.s3).toEqual({ ref_onset: [], ref_offset: [], anchor_a_offset: null, hop: 0 });
+    expect(out.s3).toEqual({ ref_onset: [], ref_offset: [], anchor_a_offset: null, hop: 0, method: 'chroma' });
     // Bad calls raise instead of returning silently wrong data.
     expect(out.s4.badIndices).toBe(true);
     expect(out.s4.reversedTimes).toBe(true);
@@ -1596,5 +1645,48 @@ test.describe('41. score fine pass (DLNCO) — worker', () => {
       expect(Math.abs(c.shifted - c.t0), `onset at ${c.t0}`).toBeLessThan(0.021);
       expect(c.unshifted - c.t0, `onset at ${c.t0}`).toBeGreaterThan(0.02);
     }
+  });
+});
+
+test.describe('41. refill methods — worker', () => {
+  test('41.23 the refill: chroma stays the default, onsets (DLNCO) recover the truth, shift follows the anchors and fades, an unknown method is refused', async () => {
+    test.setTimeout(120_000);
+    const out = runRefillScenario();
+    const { truth, late } = out;
+    // The default is chroma, unchanged.
+    expect(out.default.ref_onset).toEqual(out.chroma.ref_onset);
+    expect(out.default.ref_offset).toEqual(out.chroma.ref_offset);
+    expect(out.default.method).toBe('chroma');
+    // DLNCO: a DTW refill like chroma, on the truth.
+    expect(out.dlnco.method).toBe('dlnco');
+    expect(out.dlnco.hop).toBe(512);
+    out.dlnco.ref_onset.forEach((t: number, k: number) => {
+      expect(Math.abs(t - truth[k + 1]), `event ${k + 1}`).toBeLessThan(0.06);
+    });
+    // Shift: no DTW. Both anchors correct the prior by -0.1 s; next to them the
+    // correction is near full, mid-segment (over 3 s from both) it has faded.
+    const s = out.shift;
+    expect(s.method).toBe('shift');
+    expect(s.hop).toBe(0);
+    expect(out.tau).toBe(1);
+    expectMonotonic(s.ref_onset);
+    expectMonotonic(s.ref_offset);
+    s.ref_onset.forEach((t: number, k: number) => {
+      const e = k + 1;
+      expect(t).toBeGreaterThanOrEqual(truth[0]);
+      expect(t).toBeLessThanOrEqual(truth[15]);
+      // Never past the truth, never later than the prior.
+      expect(t, `event ${e}`).toBeGreaterThanOrEqual(truth[e] - 1e-9);
+      expect(t, `event ${e}`).toBeLessThanOrEqual(late[e] + 1e-9);
+      const dA = late[e] - late[0];
+      const dB = late[15] - late[e];
+      if (Math.min(dA, dB) > 3) expect(late[e] - t, `event ${e} mid-segment`).toBeLessThan(0.01);
+    });
+    expect(late[1] - s.ref_onset[0]).toBeGreaterThan(0.05);
+    expect(late[14] - s.ref_onset[13]).toBeGreaterThan(0.05);
+    s.ref_offset.forEach((off: number, k: number) => expect(off).toBeGreaterThan(s.ref_onset[k]));
+    // No correction at either end: the prior comes back.
+    out.shiftNone.ref_onset.forEach((t: number, k: number) => expect(t).toBeCloseTo(late[k + 1], 12));
+    expect(out.unknown).toBe(true);
   });
 });

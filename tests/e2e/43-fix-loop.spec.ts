@@ -155,6 +155,9 @@ async function installWorkerStub(
           rec.iB = msg.iB;
           rec.tB = msg.tB;
           rec.priorLen = msg.priorRef?.length ?? null;
+          rec.method = msg.method;
+          rec.priorA = msg.priorA;
+          rec.priorB = msg.priorB;
         }
         if (msg.type === 'fix_target_begin') {
           // Increment 5: the audio-to-audio target arrives (samples intact
@@ -2071,6 +2074,62 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
       (window as any).__fixStub.posted.filter((p: any) => p.type === 'fix_realign'),
     );
 
+  test('43.83 the refill method: auto means onsets on an alignment without the fine-pass stamp and shift with it; the menu overrides it; each refill carries the fixed tick\'s previous time; header.corrections.refill names the methods used', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await expect(page.locator('#fix-refill')).toHaveValue('auto');
+    await expect(page.locator('#fix-refill option[value="auto"]')).toHaveText('auto (onsets)');
+    const before = await page.evaluate(() =>
+      (window as any)._listenTest.session.scoreAlignment.ref_onset.slice(),
+    );
+    await selectEvent(page, 2);
+    await dragSelectedTick(page, 20);
+    let posted = await realignsPosted(page);
+    expect(posted.length).toBeGreaterThan(0);
+    for (const p of posted) expect(p.method).toBe('dlnco');
+    // The span ahead starts on the fixed tick and carries where it was.
+    const ahead = posted.find((p: any) => p.iA === 2);
+    expect(ahead).toBeTruthy();
+    expect(ahead.priorA).toBeCloseTo(before[2], 9);
+    expect(ahead.priorB).toBeNull();
+    // The menu overrides auto; the choice sticks for the page.
+    await page.selectOption('#fix-refill', 'shift');
+    const n0 = posted.length;
+    const moved = await page.evaluate(
+      () => (window as any)._listenTest.session.scoreAlignment.ref_onset[2],
+    );
+    await dragSelectedTick(page, 20);
+    posted = await realignsPosted(page);
+    const fresh = posted.slice(n0);
+    expect(fresh.length).toBeGreaterThan(0);
+    for (const p of fresh) expect(p.method).toBe('shift');
+    expect(fresh.find((p: any) => p.iA === 2).priorA).toBeCloseTo(moved, 9);
+    expect(await page.evaluate(() => localStorage.getItem('listenHere_fixRefill'))).toBe('shift');
+    const refill = await page.evaluate(
+      () => (window as any)._listenTest.session.loadedAlignmentJSON.header.corrections.refill,
+    );
+    expect(refill).toEqual({ methods: ['dlnco', 'shift'], shiftTauSec: 1 });
+  });
+
+  test('43.84 with the 0.143.0 fine-pass stamp, auto means shift', async ({ page }) => {
+    await gotoFixMode(page, (json) => {
+      json.header.scoreAligner = { method: 'chroma-dtw+dlnco-fine', coarseRateHz: 5, chromaNfft: 4096 };
+    });
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await expect(page.locator('#fix-refill option[value="auto"]')).toHaveText('auto (shift)');
+    await selectEvent(page, 2);
+    await dragSelectedTick(page, 20);
+    const posted = await realignsPosted(page);
+    expect(posted.length).toBeGreaterThan(0);
+    for (const p of posted) expect(p.method).toBe('shift');
+  });
+
   test('43.35 G lays an unscored-audio gap from the selected onset to the next — a label, data-neutral but for the last note\'s tail — and G on an endpoint removes it; each is one fix-gap undo entry; the band and brackets are drawn', async ({
     page,
   }) => {
@@ -3712,7 +3771,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     for (let e = n; e < t0.on.length; e++) expect(t1.on[e], `onset ${e}`).toBe(t0.on[e]);
     expect(t1.on[i]).toBeCloseTo(a.t, 9);
     // The span waits, banded, and the button counts it.
-    expect(st.pending).toEqual([{ i }]);
+    expect(st.pending).toEqual([{ i, before: t0.on[i] }]);
     await page.waitForFunction(() => (window as any)._listenTest.fix.pendingSpans.length === 1);
     await expect(page.locator('#fix-realign-btn')).toBeEnabled();
     await expect(page.locator('#fix-realign-btn')).toHaveText('Re-align 1 (Shift+R)');
@@ -3734,7 +3793,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     // Undo takes the refill back (the span waits again), then the pin.
     await page.click('#undo-btn');
     st = await fixState(page);
-    expect(st.pending).toEqual([{ i }]);
+    expect(st.pending).toEqual([{ i, before: expect.any(Number) }]);
     expect((await fullTables(page)).on).toEqual(t1.on);
     await page.click('#undo-btn');
     st = await fixState(page);
@@ -3743,7 +3802,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect((await fullTables(page)).on).toEqual(t0.on);
     // Redo the pin; exit refills the waiting span before it closes.
     await page.click('#redo-btn');
-    expect((await fixState(page)).pending).toEqual([{ i }]);
+    expect((await fixState(page)).pending).toEqual([{ i, before: expect.any(Number) }]);
     await page.click('#fix-exit');
     await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
     posted = await realignsPosted(page);

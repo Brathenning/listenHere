@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.145.0 -- Correction: the refill follows the fine pass
+
+* Correction mode's score refill has three methods: shift (no DTW: the stored alignment keeps its shape and takes each anchor's correction, fading as exp(−distance / 1 s)), onsets (the DTW with the 0.143.0 fine pass's DLNCO onset cost, after Ewert, Müller & Grosche, ICASSP 2009), and chroma (as before). Edits → Refill chooses; auto, the default, takes shift on alignments stamped with the fine pass and onsets on older ones. The choice sticks for the page.
+* Against 2,115 hand-placed Fledermaus anchors, left out in turn: on a 0.143.0 alignment the chroma refill made the notes around each anchor worse (p90 80 → 138–233 ms); shift is never worse than leaving the alignment alone, and better in the median at every anchor spacing (e.g. 30.1 → 18.8 ms with every second anchor kept). On older alignments onsets beat chroma (p90 233 → 103 ms at the widest spacing).
+* `header.corrections.refill` names the methods a correction session used (absent: chroma); a fix pending a Re-align remembers its tick's previous time.
+* Testing: 41.23, 43.83, and 43.84 new; 41.8 and 43's pending-key checks updated; specs 41, 42, and 43 pass (148, Chromium). The worker's refill reproduces the measurement harness exactly; in Pyodide a 30 s refill takes 92 ms (chroma), 149 ms (onsets), 1 ms (shift).
+
 ### 0.143.0 -- Score alignment: a fine pass on note onsets
 
 * The wizard's score alignment adds a fine pass: a banded DTW at 25 Hz, ±2 s around the coarse path, on chroma plus DLNCO onset features (decaying, locally normalised chroma onsets after Ewert, Müller & Grosche, ICASSP 2009; parameters after the Sync Toolbox, Müller et al., JOSS 6(64):3434, 2021; our onsets come from an STFT, not its IIR filterbank). Against ground truth, median error 52.5 → 29.3 ms on Fledermaus (2,115 hand-placed anchors, VPO-2022) and 53.2 → 23.4 ms on 57 (n)ASAP piano performances.

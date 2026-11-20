@@ -1763,6 +1763,18 @@ def _score_aligner_stamp(fine_rate, skipped=None, onset_shift=None):
 FIX_MIN_HOP = 512        # samples (~23 ms) — floor for short segments
 FIX_MAX_FRAMES = 6000    # frame cap; full piece lands near SCORE_HOP
 FIX_SLACK_SEC = 4.0      # default band half-width around the prior map
+# The refill's method (0.145.0): 'chroma' (the DTW of 0.144 and before),
+# 'dlnco' (the same DTW with the onset cost of the score fine pass), or
+# 'shift' (no DTW: the prior keeps its shape and takes the anchors'
+# corrections, each fading as exp(-distance / FIX_SHIFT_TAU_SEC) in prior
+# time). Measured 2026-11-19 against 2,115 human anchors (working-docs
+# tools/refill-onsets-2026-11-19): on a 0.143.0 fine-pass table, shift is
+# never worse than the table itself and better in the median at every
+# anchor spacing, while chroma makes it worse (p90 80 -> 138-233 ms) and
+# dlnco nearly recovers it; on older tables dlnco is the robust choice. The
+# client picks by header.scoreAligner. tau was chosen on those anchors.
+FIX_SHIFT_TAU_SEC = 1.0
+FIX_REFILL_METHODS = ('chroma', 'dlnco', 'shift')
 
 _fix = None
 
@@ -1891,16 +1903,24 @@ def _fix_guided_warp(feat_a, feat_b, a_lo, a_hi, b_lo, b_hi, knots_a, knots_b, s
     b_path = b_lo + wp[1].astype(np.float64) * seg_b / max(n_b - 1, 1)
     return lambda xq: interp_linear_extrap(a_path, b_path, xq)
 
-def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frames=None):
+def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frames=None,
+                        method=None, prior_a=None, prior_b=None):
     """Re-fill ref onsets/offsets for the events strictly between two anchors.
 
     i_a / i_b: bounding event indices (-1 = piece-start corner, n_events =
     piece-end corner); t_a / t_b: their (corrected) reference times.
     prior_ref: the CURRENT ref_onset values of the interior events, used as
     the DTW guide band's centre (tapered onto the anchors, +- slack_sec).
+    method: 'chroma' (default), 'dlnco', or 'shift' (see FIX_SHIFT_TAU_SEC).
+    prior_a / prior_b: for 'shift', the two anchor events' times BEFORE this
+    edit (default: t_a / t_b, i.e. no correction at that end).
     Returns interior ref_onset / ref_offset, the anchor event i_a's remapped
-    offset when it falls inside the segment, and the hop actually used.
+    offset when it falls inside the segment, the hop actually used (0 for
+    'shift'), and the method.
     """
+    method = 'chroma' if method is None else str(method)
+    if method not in FIX_REFILL_METHODS:
+        raise ValueError('fix_realign_segment: unknown method ' + method)
     if _fix is None:
         raise RuntimeError('fix_realign_segment before fix_begin')
     slack = FIX_SLACK_SEC if slack_sec is None else float(slack_sec)
@@ -1919,19 +1939,54 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
     if len(prior_ref) != len(interior):
         raise ValueError('fix_realign_segment: prior_ref length mismatch')
     if not interior:
-        return {'ref_onset': [], 'ref_offset': [], 'anchor_a_offset': None, 'hop': 0}
+        return {'ref_onset': [], 'ref_offset': [], 'anchor_a_offset': None, 'hop': 0,
+                'method': method}
 
-    # Hop adapts to the segment: fine frames when short, capped for length.
     seg_s = s_b - s_a; seg_r = t_b - t_a
-    hop = max(FIX_MIN_HOP, int(np.ceil(max(seg_s, seg_r) * SR / cap)))
-    feat_s = _fix_features(_fix['synth'], s_a, s_b, hop)
-    feat_r = _fix_features(_fix['ref'], t_a, t_b, hop)
-    wf = _fix_guided_warp(
-        feat_s, feat_r, s_a, s_b, t_a, t_b,
-        [s_a] + [float(s_on[i]) for i in interior] + [s_b],
-        [t_a] + [float(v) for v in prior_ref] + [t_b],
-        slack, 'fix_realign_segment',
-    )
+    shifted = None
+    if method == 'shift':
+        # No DTW: each interior onset keeps its prior time plus the anchors'
+        # corrections, fading with its distance from each (weights normalised
+        # where they sum above 1, so a short segment approaches a linear
+        # blend). Offsets follow the shifted onsets as the segment's map.
+        hop = 0
+        p_a = t_a if prior_a is None else float(prior_a)
+        p_b = t_b if prior_b is None else float(prior_b)
+        inner = np.asarray(prior_ref, dtype=np.float64)
+        w_a = np.exp(-np.maximum(inner - p_a, 0.0) / FIX_SHIFT_TAU_SEC)
+        w_b = np.exp(-np.maximum(p_b - inner, 0.0) / FIX_SHIFT_TAU_SEC)
+        corr = (w_a * (t_a - p_a) + w_b * (t_b - p_b)) / np.maximum(w_a + w_b, 1.0)
+        shifted = np.maximum.accumulate(np.clip(inner + corr, t_a, t_b))
+        ks, first = np.unique(np.array([s_a] + [float(s_on[i]) for i in interior] + [s_b]),
+                              return_index=True)
+        kr = np.maximum.accumulate(np.concatenate([[t_a], shifted, [t_b]])[first])
+        wf = lambda xq: interp_linear_extrap(ks, kr, xq)
+    else:
+        # Hop adapts to the segment: fine frames when short, capped for length.
+        hop = max(FIX_MIN_HOP, int(np.ceil(max(seg_s, seg_r) * SR / cap)))
+        feat_s = _fix_features(_fix['synth'], s_a, s_b, hop)
+        feat_r = _fix_features(_fix['ref'], t_a, t_b, hop)
+        costfn = None
+        if method == 'dlnco':
+            # The score fine pass's onset cost (compute_dlnco), on the same
+            # slices, centred on the chroma frames as in _score_fine_features.
+            d = max(0, int(round((SCORE_N_FFT - DLNCO_N_FFT) / 2 / hop)))
+            def _ons(audio, lo_sec, hi_sec, n):
+                lo = max(0, int(lo_sec * SR)); hi = min(len(audio), int(hi_sec * SR))
+                o = compute_dlnco(audio[lo:hi], hop)[:, d:d + n]
+                return np.pad(o, ((0, 0), (0, n - o.shape[1]))) if o.shape[1] < n else o
+            oa = _ons(_fix['synth'], s_a, s_b, feat_s.shape[1])
+            ob = _ons(_fix['ref'], t_a, t_b, feat_r.shape[1])
+            def costfn(i, lo, hi):
+                cc = np.clip(1.0 - feat_s[:, i] @ feat_r[:, lo: hi + 1], 0, 2)
+                return cc + DLNCO_WEIGHT * np.sqrt(
+                    ((ob[:, lo: hi + 1] - oa[:, i: i + 1]) ** 2).sum(axis=0))
+        wf = _fix_guided_warp(
+            feat_s, feat_r, s_a, s_b, t_a, t_b,
+            [s_a] + [float(s_on[i]) for i in interior] + [s_b],
+            [t_a] + [float(v) for v in prior_ref] + [t_b],
+            slack, 'fix_realign_segment', costfn,
+        )
 
     # An OFFSET may legitimately lie past the segment's right edge: ties,
     # sustained notes under a moving line, any polyphonic overlap. On the
@@ -1954,7 +2009,10 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
             return float(np.clip(wf(s), t_a, t_b))
         return float(min(t_b + (s - s_b) * seg_rate, _fix['ref_dur']))
 
-    new_on  = [float(np.clip(wf(float(s_on[i])),  t_a, t_b)) for i in interior]
+    if shifted is not None:
+        new_on = [float(v) for v in shifted]
+    else:
+        new_on = [float(np.clip(wf(float(s_on[i])),  t_a, t_b)) for i in interior]
     new_off = [_map_off(s_off[i]) for i in interior]
     anchor_a_offset = _map_off(s_off[i_a]) if i_a >= 0 else None
     return {
@@ -1962,6 +2020,7 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
         'ref_offset': new_off,
         'anchor_a_offset': anchor_a_offset,
         'hop': hop,
+        'method': method,
     }
 
 # --- audio-to-audio correction (plan §14 increment 5): the target recording ---
@@ -2612,10 +2671,10 @@ json.dumps(_fix_events)
 
     if (e.data.type === "fix_realign") {
       const pyodide = await pyodideReady;
-      const { iA, tA, iB, tB, priorRef, slackSec, maxFrames } = e.data;
+      const { iA, tA, iB, tB, priorRef, slackSec, maxFrames, method, priorA, priorB } = e.data;
       pyodide.globals.set(
         "_fix_seg_arg",
-        JSON.stringify({ iA, tA, iB, tB, priorRef, slackSec, maxFrames }),
+        JSON.stringify({ iA, tA, iB, tB, priorRef, slackSec, maxFrames, method, priorA, priorB }),
       );
       const segJson = await pyodide.runPythonAsync(`
 import json
@@ -2623,6 +2682,7 @@ _seg = json.loads(str(_fix_seg_arg))
 json.dumps(fix_realign_segment(
     _seg['iA'], _seg['tA'], _seg['iB'], _seg['tB'],
     _seg['priorRef'], _seg.get('slackSec'), _seg.get('maxFrames'),
+    _seg.get('method'), _seg.get('priorA'), _seg.get('priorB'),
 ))
 `);
       self.postMessage({ type: "fix_segment", iA, iB, result: JSON.parse(segJson) });
