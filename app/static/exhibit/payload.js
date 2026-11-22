@@ -133,6 +133,9 @@ export function buildExhibitData(payload, metadata, { debug = false } = {}) {
     audio,
     annotations,
     byAudience,
+    // The score's sections (prep, 0.118.0) as index pairs on the reference
+    // grid, outermost first; empty for a piece aligned without a score.
+    sections: payload.sections?.list || [],
   };
 
   if (debug) {
@@ -211,4 +214,5 @@ async function _fetchJson(url, { required }) {
  * @property {Record<string, string>} audio       absolute URLs
  * @property {object[]} annotations               all of them, every audience
  * @property {Record<string, object[]>} byAudience
+ * @property {object[]} sections                  {id, parent, level, label, bars, indexPair}
  */

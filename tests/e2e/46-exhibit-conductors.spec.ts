@@ -284,7 +284,13 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
         range.selectNodeContents(h);
         const textWidth = range.getBoundingClientRect().width;
         const headingRight = ov.offsetLeft + h.offsetLeft + textWidth;
-        const first = Math.min(...[...toolbar.children].map((c) => (c as HTMLElement).offsetLeft));
+        // Controls out of the flow (the look switch behind an explorer) have no
+        // box and an offsetLeft of 0; main.js skips them, and so does this.
+        const first = Math.min(
+          ...[...toolbar.children]
+            .filter((c) => (c as HTMLElement).offsetParent !== null)
+            .map((c) => (c as HTMLElement).offsetLeft),
+        );
         return {
           strip: ov.dataset.stripHeading ?? null,
           clears: headingRight <= first,
@@ -619,7 +625,11 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
           // Layout offsets, like 46.3 — see the note there about the far half's
           // rotation. Only the width comes from a rect.
           const right = ov.offsetLeft + h.offsetLeft + range.getBoundingClientRect().width;
-          const first = Math.min(...[...toolbar.children].map((c) => (c as HTMLElement).offsetLeft));
+          const first = Math.min(
+            ...[...toolbar.children]
+              .filter((c) => (c as HTMLElement).offsetParent !== null)
+              .map((c) => (c as HTMLElement).offsetLeft),
+          );
           return ov.dataset.stripHeading !== '1' || right <= first;
         })(),
         closeInside: (() => {

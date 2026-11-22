@@ -1,5 +1,223 @@
 # Listen Here! CHANGELOG.md
 
+### 0.147.0 -- Score alignment: a lead-in for the first note
+
+* The score pass puts 3 s of silence before the synthesised score and lets the score's alignment start anywhere within it (a subsequence DTW with the score's entry free, the reference span consumed in full), so the first note no longer lands in the quiet head that the open-ends span keeps on purpose. Against ground truth: Fledermaus VPO-2022's first note −2.0 s → +78 ms; on 57 (n)ASAP piano performances the first note moves from a median 0.86 s early (45 of 57 early) to 0.00 s, and the first five onsets' error from 135 to 73 ms; the rest of each piece is unchanged.
+* Advanced → "Score lead-in" (3 s / Off), used with the fine pass; Off gives 0.145.0's score alignment exactly. `header.scoreAligner.leadIn` records it.
+* Testing: 41.24 new, 41.20 runs without the lead-in; specs 17, 41, 42, 43, and 44 pass (185, Chromium). The worker reproduces the measurement harness exactly on both ground truths. On a recording whose music starts at once, the worst note of the synthetic test piece goes from 30 to 54 ms.
+
+### 0.145.0 -- Correction: the refill follows the fine pass
+
+* Correction mode's score refill has three methods: shift (no DTW: the stored alignment keeps its shape and takes each anchor's correction, fading as exp(−distance / 1 s)), onsets (the DTW with the 0.143.0 fine pass's DLNCO onset cost, after Ewert, Müller & Grosche, ICASSP 2009), and chroma (as before). Edits → Refill chooses; auto, the default, takes shift on alignments stamped with the fine pass and onsets on older ones. The choice sticks for the page.
+* Against 2,115 hand-placed Fledermaus anchors, left out in turn: on a 0.143.0 alignment the chroma refill made the notes around each anchor worse (p90 80 → 138–233 ms); shift is never worse than leaving the alignment alone, and better in the median at every anchor spacing (e.g. 30.1 → 18.8 ms with every second anchor kept). On older alignments onsets beat chroma (p90 233 → 103 ms at the widest spacing).
+* `header.corrections.refill` names the methods a correction session used (absent: chroma); a fix pending a Re-align remembers its tick's previous time.
+* Testing: 41.23, 43.83, and 43.84 new; 41.8 and 43's pending-key checks updated; specs 41, 42, and 43 pass (148, Chromium). The worker's refill reproduces the measurement harness exactly; in Pyodide a 30 s refill takes 92 ms (chroma), 149 ms (onsets), 1 ms (shift).
+
+### 0.143.0 -- Score alignment: a fine pass on note onsets
+
+* The wizard's score alignment adds a fine pass: a banded DTW at 25 Hz, ±2 s around the coarse path, on chroma plus DLNCO onset features (decaying, locally normalised chroma onsets after Ewert, Müller & Grosche, ICASSP 2009; parameters after the Sync Toolbox, Müller et al., JOSS 6(64):3434, 2021; our onsets come from an STFT, not its IIR filterbank). Against ground truth, median error 52.5 → 29.3 ms on Fledermaus (2,115 hand-placed anchors, VPO-2022) and 53.2 → 23.4 ms on 57 (n)ASAP piano performances.
+* All three presets turn it on and pool the coarse score pass to 5 Hz (score resolution 2); Advanced → "Score fine pass" Off restores the coarse-only score pass of 0.141.0 exactly. Saved preset choices take the new values; saved custom settings keep theirs and gain the fine pass.
+* New alignments carry `header.scoreAligner`, the score aligner's method, rates, and parameters as run; correction records copy it into their base. Absent means an alignment made before 0.143.0.
+* Testing: 41.20–41.22 new; specs 17, 41, 42, 43, 44, and 49 pass (195, Chromium; 43.59 failed once under load and passed 3/3 alone). The worker's own score_align reproduces the prototype exactly on both ground truths, and Pyodide 0.26.4 matches native numpy bit for bit.
+
+### 0.141.0 -- Correction: the onset detector in a menu
+
+* Correction mode's Snap controls set the onset detector's hop (6, 12, or 23 ms) and smoothing (off, 3–9); the `?onsetHop` / `?onsetSmooth` URL parameters of 0.126.0 are gone. Only the onset lanes are recomputed. With a score this moves the lanes and the snap targets; score-less it also re-detects the unanchored ticks, keeping anchored and added ones and dropping a re-detected tick within 50 ms of a kept one. A saved session records the detector and reopens on it, rebuilding anchored ticks a detector no longer finds; the chooser's marker total counts the same table.
+* Testing: 43.73 rewritten for the menu, 43.82 new; specs 41, 42, and 43 pass (142, Chromium); a live run on Fledermaus recomputes the onset lane alone in 0.3 s.
+
+### 0.139.0 -- Correction: clicks on the ticks
+
+* Correction mode's Playback controls choose what the audition plays beside the recording: the synth (score-less, the reference) as before, or clicks. Clicks puts a synthesized cowbell (after Gordon Reid, Sound On Sound, September 2002) on every tick where it stands now, following each edit, with the recording in both ears; the balance slider then mixes the recording against the clicks. In all three modes.
+* Testing: 43.80, 43.81, and 60.4 new; 42.32 also keeps "synth / clicks" on one line; specs 42, 43, and 60 pass (126, Chromium).
+
+### 0.137.0 -- Correction: go to a section of the score
+
+* Correction mode's Score controls add a "Go to section…" menu listing the MEI's sections (named by `@label`, else `@xml:id`, else the measure range; nested ones indented in the open list). Picking one selects its first note, with playback starting 0.5 s before it. The menu names the section being played, holds still while in use, and glows briefly when the section changes. Not in score-less sessions.
+* Testing: 42.42 new, 43.63 checks the menu's absence score-less; specs 42 and 43 pass (120, Chromium).
+
+### 0.135.0 -- Correction: marker totals in the chooser
+
+* The "Correct alignment" chooser shows each row's total markers, anchored or not, before its anchor count ("2,220 markers · 2,115 anchors, 0 gaps") once the total is known: with a score after the prewarm, score-less after a first entry this load (detected plus added ticks).
+* Testing: 42.41 and 43.79 new; specs 42 and 43 pass (119, Chromium).
+
+### 0.133.0 -- Correction: time rulers
+
+* Correction mode draws a time ruler along the strip's top and bottom edges, in the recording's seconds, with the playhead between them; score-less, the reference pane has its own ruler in the reference's seconds. The step follows the zoom (labels at least 70 px apart, down to 10 ms).
+* Testing: 43.78 new; 43.30 and 43.57 follow the lanes' new place below the ruler; specs 42 and 43 pass (117, Chromium).
+
+### 0.131.0 -- Correction: first / last page and a page field
+
+* Correction mode adds first- and last-page buttons to the blue transport bar, outermost beside the page-turn buttons, with Home and End as keys.
+* The page number in "Page n / N" is a field: type a page and press Enter (out of range goes to the first or last page, Escape keeps the current one). Score-less sessions too.
+* Testing: 42.40 new, 42.2, 42.10, and 43.63 (score-less, now also typing a page, End, and Home) follow the field; specs 42 and 43 pass (116, Chromium).
+
+### 0.130.0 -- The exhibit's section ribbon and the Salon theme
+* A three-way switch in each viewport's toolbar shows the strips as the score's sections, as sections over a faint waveform, or as waveforms; on by default, waveform first (`?ribbon=off|switch|first`). Glass, regions, zoom, and taps are unchanged.
+* The choice is kept per viewport across reloads; the attract loop's sweep resets it.
+* A caption above the strips names the current section and theme, with a short fade on change.
+* Study-panel rows: ribbon, tone, pastel strength, height, theme names, and ghost strength.
+* Section labels and shared short names for Die Fledermaus and the Kaiser-Walzer come from the overrides files (`sectionLabels`, `sectionShort`); drafts for review.
+* New Salon theme, the default (`?theme=parchment` restores parchment): cobalt velvet, brass, a honey-wood strap, washes drawn under the waveform, and a paper "Did you know?" sheet.
+* The listening tour explains the switch; behind an explorer the switch leaves the toolbar, so the heading keeps its seat.
+* Testing: 35.30–35.33, 47.26, and 50.10 pin the switch, its default, its memory, and its tour step; 46.3 and 46.8 skip controls out of the flow. Full suite on Chromium: 678 passed, 2 skipped, 0 failed (Firefox not run).
+
+### 0.129.0 -- Correction: Enter on a multi-selection
+
+* Enter on several selected ticks (marquee, Shift+click, or A) anchors every free one where it stands; when all are anchored, Enter unanchors them all. Either is one undo step and moves no time; gap endpoints stay with G.
+* Testing: 43.76 and 43.77 new (score and audio-to-audio); specs 42 and 43 pass (115, Chromium).
+
+### 0.127.0 -- Correction: dragging up to an anchored tick
+
+* A tick dragged back towards an anchored tick now stops 10 ms past it, no longer 40 ms: the 30 ms push buffer is kept only against ticks that can be pushed. A grace note's main note can now sit at its real distance (m. 79 of the Fledermaus: 10.6 ms, was 40 ms).
+* Audio-to-audio, behind an anchored tick a drag also stops 1 ms past the first raster sample the anchor holds, so a drop the drag allows is never refused afterwards.
+* Behind a free tick, a drop before that raster sample is accepted and the span refills from the tick, which shifts with it, instead of "Cannot anchor here: not before the previous onset" and a jump back.
+* A released tick stays where it was dropped while the re-align runs; it was drawn at its old place for about 110 ms first.
+* Testing: 43.74 and 43.75 new, 43.51 follows the new floor; specs 42 and 43 pass (113, Chromium); the m. 79 probe on the real recordings (working-docs `tools/live-m79-grace.js`) shows the 10.6 ms floor and no flash.
+
+### 0.126.0 -- Onset-detector trial in correction mode
+
+* Opt-in `?onsetHop=256` (or 128) and `?onsetSmooth=1` (any odd width up to 9) set the onset curve's hop and moving-average width for the lanes, the snap targets, and a score-less session's ticks. Without them nothing changes (hop 512, width 5). Measured: piano onsets +25 ms late against about +1 ms; Vienna 4x22 first onsets +37–40 ms against +4 ms; Fledermaus VPO-2022, 73 % of the score's onsets found within 100 ms against 28 %, at 85 % precision against 97 %.
+* A score-less session saved with anchors on the trial's ticks records the detector (`header.corrections.refTickDetector`). Its anchors find their ticks by reference time, so it reopens on the detector it was saved with, whatever the URL. Versions before 0.126.0 ignore the key.
+* Testing: 43.73 new; specs 41, 42, and 43 pass (129, Chromium); a live entry with the real worker moved the test recording's onsets a median 32 ms earlier (64 onsets either way); the functional suite passes on top of 0.125.0 (678, 2 skipped).
+
+### 0.125.0 -- Firefox: the alignment worker no longer waits behind the recordings
+
+* Correction mode in Firefox on a plain-HTTP server (Flask's dev server) could hang at "Step 2/4: align runtime…" on an alignment with many recordings: the recordings held all 6 of Firefox's connections to the server, and the worker script's request waited for one indefinitely. It happened when the load-time prewarm was skipped, as for an alignment offered a re-base.
+* The worker script is now fetched once, as the page loads and before any recording, and correction mode, Add recordings, and the alignment wizard start their workers from that copy in memory.
+* Testing: 42.39 new; 17, 42, 52, and 57 pass (67); correction mode reaches ready on Fledermaus's re-base path in Chromium, and in Firefox at its default 6 connections (by hand: Playwright's Firefox cannot launch on macOS 27); the functional suite passes (671, 2 skipped).
+
+### 0.123.0 -- A Piece toggle in the study panel
+* The study panel's Misc tab starts with a Piece row (Die Fledermaus, Kaiser-Walzer, Pizzicato-Polka), which sets `?piece=` and reloads like every other row.
+* Testing: spec 35 passed 30 of 30 on Chromium; the toggle was checked in the browser, booting Kaiser-Walzer with no console errors.
+
+### 0.122.0 -- The Kaiser-Walzer carries Chanda's nine annotations
+* The exhibit's Kaiserwalzer spine is the body Chanda authored her three sets on (reference VPO-2021, balanced preset, open ends), and the sets are prep's audience sources. Every region is a clean projection on it, so its nine index pairs are hers, without re-anchoring.
+* The score, sections, and MEI are borrowed from `alignment-fast.json` (`SOURCES["score"]`), which shares the reference grid exactly; prep asserts that. The 20 sections are unchanged.
+* The ten recordings are Chanda's choice: VPO 1987, 2003, 2016, and 2021, Karajan 1946, Böhm 1939, Das Grosse Neujahrskonzert (Rieu 2012), Kendlinger, Bernstein 1982, and Karajan 1984. Every question shows its answers.
+* A new `texts` key in the overrides file fixes annotation texts by find and replace, so the fixes survive a re-export of her sets; a find that no longer matches warns. `kaiserwalzer-overrides.json` carries her typo fixes and the three rewordings the new ten need.
+* Testing: 47.17 expects nine annotations. Specs 34–38, 45–48, and 50: 210 of 212 passed on Chromium; 38.6 and 38.8 failed on the intermittent "execution context destroyed" and spec 38 then passed alone 40 of 40. After the curation and texts, specs 34 and 47 passed 47 of 47. The Fledermaus payload rebuilds unchanged.
+
+### 0.120.0 -- Die Fledermaus on the corrected alignment: reference VPO-2022, Chanda's regions re-anchored
+* The exhibit's Fledermaus spine is `ExhibitAnnots/Alignment_Fledermaus_HQ.2026-11-10.json`: the corrected score alignment re-based onto Eulenburg 2f44c21, with the grids of the eleven recordings it lacked spliced in from `Fledermaus-all-fixed.json`. `Alignment_Fledermaus_HQ.json` is left in place for checkouts on the September table.
+* The reference is VPO-2022 (26,844 frames; was VPO-2010, 29,121), so the exhibit starts on Barenboim 2022. The wall's recording order is unchanged.
+* Chanda's three sets are re-anchored onto it (`exhibit_annots_on_hq.py --reanchor`, into `ExhibitAnnots/on-hq-2026-11-10/`) and are now prep's audience sources; `AUTHORED` names her originals. The twelve index pairs are re-voted; six are flagged for an ear check.
+* Clapping Detective cannot be placed by a pair on VPO-1989: its applause lies past the end of the VPO-2022 grid, so it shows 7:46.8–7:51.5 until a time is hand-placed.
+* The payload carries all 26 sections of the sectioned MEI.
+* Testing: 34.2 asserts grid length against the reference's own grid; 37.26 rests on a recording the data allows; 47.15 ends whatever recording a pending switch point moved the pass to. Specs 34–38, 45–48, and 50: 211 of 212 passed on Chromium, with 38.14 failing once on an intermittent "execution context destroyed" and passing alone 3 of 3.
+
+### 0.118.0 -- The exhibit payload carries the score's sections; the MEI is pinned to the alignment's commit
+* `tools/prep_exhibit_data.py` writes the MEI's `<section>` tree into the payload (`sections`): id, parent, level, bars, a label from the overrides file's `sectionLabels` or the MEI's `@label`, and an index pair on the reference grid, as regions have.
+* Bar times come from `tools/mei_measure_times.mjs`: Verovio's measure quarters mapped to reference seconds by `engine/time-map.js`. It refuses an MEI whose onset quarters differ from the alignment's score.
+* The MEI step fetches the commit a re-based alignment names (`header.rebased.ontoMei.commit`) rather than the branch, checks `header.meiSha256` when present, refetches on every run when pinned, and warns when only a branch is known. It now runs before the payload step.
+* The payload records `meiCommit` and `meiSha256`.
+* `tools/verovio_node.mjs`: Verovio loading, provenance, and the quarters check, moved out of `make_standins.mjs` and shared.
+* Testing: 41.15 passes; a payload rebuilt from the current sources matches the live one in recordings, annotations, and score.
+
+### 0.116.0 -- Answers behind a card: a quiz's per-recording notes peel off
+* `?reveal=peel`: a flagged annotation's per-recording note, its answer, lies under a "Show answer" card. A tap peels it off; a drag peels it under the finger, in either reader's half. Released short of the finish, it springs back.
+* A covered answer keeps one height whatever its length. Peeled stays peeled for that recording, and the attract loop's sweep covers every answer again.
+* Which annotations: a `reveal` list in the piece's overrides file, carried into the payload by `tools/prep_exhibit_data.py`. Four in Die Fledermaus, seven in the Pizzicato-Polka.
+* Off by default; the study panel has the switch.
+* Testing: 37.32 a tap peels a flagged note per recording, and unflagged notes stay bare; 37.33 a drag peels under the finger in both halves, and a short one springs back; 37.34 off by default.
+
+
+### 0.115.2 -- Werkzeug 3.1.9
+
+* `requirements.txt`: Werkzeug 3.1.6 → 3.1.9 (GHSA-g6x2-hccm-hh4m: `safe_join` let Windows device names through, which only matters on Windows/NTFS).
+* `python-dotenv` stays at 1.0.0 (GHSA-mf9w-mj56-hr94 is in `set_key`/`unset_key`, which nothing calls, and 1.2.2 needs Python 3.10).
+* Testing: specs 01 and 04 pass (13, 2 skipped); a test-client probe of static files and the fixture route, including the origin rewrite and traversal or device-name paths (404), on a fresh Python 3.9.6 venv; the functional suite passes on top of 0.115.1 (670, 2 skipped), though its test venv still runs Werkzeug 3.0.6.
+
+### 0.115.1 -- Tests serve Pyodide locally
+
+* Testing: Pyodide 0.26.4 and its numpy (27 MB) are in `tests/fixtures/pyodide/`; the shared test fixture answers the worker's jsDelivr requests from there, so no spec downloads them. The app still loads Pyodide from jsDelivr.
+
+
+### 0.115.0 -- Correction mode re-bases an alignment onto an edited score
+
+* When the score has changed since the alignment was made, but only as far as an edit moves the same events (same event count, no neighbouring events reordered, every onset within 1/8 quarter), correction mode offers to re-base onto the current score instead of refusing: the score quarters and synth times come from the fresh render, score↔reference anchors and the score hints of audio-to-audio anchors follow their events, recording times are kept, and `header.rebased` records what moved; the change is unsaved until saved. Larger differences still refuse.
+* New alignments carry a SHA-256 of their MEI (`header.meiSha256`), renewed by a re-base; when it differs from the loaded score, the re-base offer and the refusal say that the score's MEI has changed.
+* Testing: 42.36–42.38 new; specs 39 (4), 42 (37), and 43 (65) pass, eight tests that timed out or misplaced a drag under load passing on a re-run; the full suite was not run.
+
+### 0.114.0 -- Score-less correction: ticks can be added on the reference where none was detected
+
+* Where the reference's onset detector found nothing (a legato change, a soft entry), a click on the reference pane adds a tick, which drags on the recording like any other.
+* "Click to seek" / "Click to add" on the gap between the panes sets what a plain click off a tick does; Shift+click adds in either mode.
+* With the Magnet on, an added tick lands on the onset curve's strongest peak within 60 ms, a peak too weak for the detector included; Alt places it exactly. A click within 50 ms of a tick selects that tick.
+* While a click would add, a guide in listening mode's alignment style runs down from the pointer and slants to where the tick will land, or stays straight when it lands where clicked.
+* Added ticks are saved with the alignment (header.corrections.refTicks), shared by every recording corrected against that reference; adding and removing are undoable, and Delete removes an added tick that holds no anchor.
+* "Magnet on drag" is now "Magnet", as it also places added ticks.
+* The click-mode switch hangs from the reference pane's frame, in its colour, with an ↑ to say which pane it rules.
+* The reference's spectrogram dims and shows the busy badge while a configuration change recomputes it, as the recording's does.
+* Score-less, the balance slider's right-ear icon is a bullseye (the reference) instead of a microphone.
+* Audio-to-audio anchors between the grid's 20 ms raster samples are now exact: a refill starting with a run past the anchor drew its tick up to 100 ms or more off where it was dropped (measured 103 ms), which looked like snapping with the Magnet off. The nearer flanking sample now moves so the grid passes through the anchor.
+* Resizing the panes or lanes no longer squeezes the strip's playhead and ticks toward the left edge until release.
+* The add guide is salient: bolder, cased so it reads on any ground, and the pane's full height whatever the pointer's; the pane tabs and the click-mode switch are translucent so it shows through them.
+* A plain click on empty strip, in both correction modes, jumps the playhead there as a click on the reference pane does; it still clears the selection, and a drag still draws a marquee.
+* A drag on the reference pane draws a marquee that selects the ticks it spans, as on the strip, in either click mode.
+* A test's worker stub installed after the load-idle prewarm has booted the real worker now replaces it: on a load slower than ~2.2 s, stubbed specs had been talking to the real engine.
+* In both correction modes "Page only" and "Replay off" are now "Auto-page" and "Auto-replay", on by default (as the old switches were off), and remembered across reloads.
+* Testing: 41.19, 43.70, and 43.71 new; 43.43's linear-refill check leaves out the two samples flanking the anchor and checks the anchor exact instead; 43.21 and 43.28 follow the renamed switches, 43.21 checks the choice survives a reload, 43.68 the strip click; 42.35 and 43.72 new; the functional suite passes (673, 2 skipped; 13 page-load timeouts late in a slow run passed together on a re-run).
+
+### 0.113.0 -- Score-less correction plays the reference, warped to the recording, in the right ear
+
+* The audition's right ear is the reference recording played through the alignment: the speed control's stretch worklet gives it its own pitch-preserving grain for each of the recording's, starting where the grids map that grain's centre.
+* A fix, undo, or revert hands the worklet the new grid, which it uses from its next grain; nothing is re-rendered.
+* Where the reference runs more than four times faster or slower than the recording over the surrounding 2 s (a gap, applause, a repeat only one has), the right ear fades out.
+* The right ear is level-matched to the recording, and the transport and balance tooltips name it.
+* Testing: spec 60 new (3: the worklet rendered offline), 43.69 new; the functional suite passes (668, 2 skipped), 0.112.0's changes included. Measured on the fixture's recordings, 77 of 81 reference onsets land in the warped ear within 100 ms of their projected time (median 5 ms); a fix reaches the warped ear about 120 ms after the drag, the realign's time.
+
+### 0.112.0 -- Score-less correction shows the reference recording above the one being corrected
+
+* The reference recording takes the score pane's place, unwarped, over the page's span of reference time: waveform, spectrogram, and onset curve, resizable like the strip's lanes, and split 50/50 with the strip, whose resized height is remembered apart from score sessions'.
+* Each pane is framed in its dominant colour and named on a tab at its corner: "Reference · file" above, "Recording · file" below.
+* The Lanes box gains a Reference group with a switch per lane, all on by default; with all three off the pane closes and the recording takes the height.
+* Ticks at the reference's onsets join the recording's ticks by connectors, as score notes do; a click on one selects its onset, a click between them seeks the recording to that moment.
+* A reference playhead follows the audition mapped back through the recording's grid, so it moves at warped speed.
+* The reference pane has its own colours per theme (a cool waveform and playhead, a viridis-like spectrogram), each measured against the theme's ticks, anchors, selection, playhead, and waveform, the three colour-vision deficiencies included.
+* The alignment worker runs lanes requests one at a time: two in flight overwrote each other's results, so a quick run of spectrogram settings could paint the wrong data.
+* Testing: 43.67 and 43.68 new, 43.63 updated; specs 41–43 pass (119; timeouts under load passed alone). The functional suite was not run: full runs are on hold while the machine is closed.
+
+### 0.111.1 -- A score edited since its alignment keeps a correct score row
+
+* When the score's MEI has changed since the alignment was made (a tempo mark over grace notes moves them in quarters), the score row's timing is matched to the fresh MIDI by event position, as long as every event is within 1/8 quarter of its stored onset, instead of falling back to the stored synth tables, which carry the old tempo map.
+* Correction mode's refusal names the likely cause when Verovio is unchanged (the score's encoding was edited), shows quarters to four decimals, and sets its two paragraphs apart.
+* Testing: 39.2 moved past the limit, 39.4 new; the functional suite passes (661, 2 skipped) but for 49.14, whose 60 s wizard wait a slow CDN outlasted with and without these changes.
+
+### 0.111.0 -- Score regions: mei-friend annotations load without recordings; the score row shows their region
+
+* Annotations loaded from Solid take the next palette colour, as a new annotation, instead of grey.
+* A mei-friend annotation loads with no recordings selected; picking a recording places its one score region there, from the earliest onset to the latest offset of its MEI elements in Verovio's timemap (a chord, measure, or slur stands for the notes it holds or joins).
+* Loading no longer needs the score: "Score-rendering toolkit not ready" is gone. Placing a score region waits up to a minute for the score, then says why it can't.
+* The synthesised score row shows a score selection's region, nailed to its elements' times, and nothing else; it is never selected or drawn on as a recording, nor dimmed as one in Edit mode.
+* The score region is dashed everywhere and can't be deleted. On a recording it moves for that recording only: its handles show a forbidden cursor until Shift is held, and a plain drag is refused with a note pointing to Correct alignment… and Shift+drag, gone at the next click or after six seconds.
+* On the pod the score region is position 1 of every audio Selection; a reload links it to the score Selection again and marks recordings moved off the projection as Shift-moved.
+* Regions are no longer added to a waveform before it knows its duration, which left stray copies at 0:00.
+* Post to Solid, refused while recordings lack Linked Data URIs, comes on as soon as Manage recordings closes with them set, not only after the drawer is reopened.
+* When an annotation's access can't be read (a dropped connection, say after a failed Make public), the card shows "Access unknown" with Try again, instead of a greyed-out button that only a reload revived.
+* Testing: spec 59 new (3), 13.2 and 55.19 new; 43.62's import updated; the functional suite passes (656, 2 skipped).
+
+### 0.110.3 -- The start page's URL field remembers earlier entries
+
+* "Open from the Web" is now a plain GET form with a named field instead of a scripted redirect, so the browser offers previously loaded alignment URLs; the resulting `/?align=` address is unchanged.
+* Testing: 1.11 new; spec 01 passes (7, 2 skipped).
+
+### 0.110.2 -- URI fields remember earlier entries
+
+* The wizard's MEI URI and audio URI prefix fields, and Manage recordings' global URI prefix, offer the last twelve http(s) values committed in them as a drop-down, most recent first; the two prefix fields share one history.
+* Testing: 17.23 new; the functional suite passes (655, 2 skipped; eleven timeouts under load passed on a re-run).
+
+### 0.110.1 -- The favicon stays visible in dark browsers
+
+* The favicon sits on a round badge in the dark theme's logo tint (`#e8f0d0`), clipped to the circle, so the dark bat no longer disappears against a dark tab strip.
+
+### 0.110.0 -- Alignments without a score can be corrected
+
+* A score-less alignment opens the correction screen on its recordings alone: the chooser has no score ↔ reference step, and each recording is corrected against the reference.
+* The ticks are the reference recording's detected onsets, or their perceived attacks when the snap toggle says so; an anchor stays on its tick whichever is shown. Pages are about 8 s of reference time, labelled by time instead of page number.
+* There is no score pane; the recording's waveform and lanes take its height. The audition plays the recording alone for now.
+* Anchors in a score-less alignment are stored by reference time only, without event indices.
+* Testing: 41.18 and 43.63–43.66 new, on the score-less fixture `alignment-noscore.json`; the functional suite passes (654, 2 skipped; six timeouts under load passed on a re-run).
+
 ### 0.109.0 -- Annotations in the older flat layout, such as mei-friend's, can be made public
 
 * An annotation whose resources sit directly in their type containers (everything mei-friend posts, and Listen Here's posts before the per-annotation folders) is no longer refused as "posted in the older flat layout": Make public and Make private set an ACL on each of its resources, including the score Selections of a mei-friend annotation, the MusicalMaterial's last when making public. Nothing is moved, so mei-friend still finds them at their addresses.

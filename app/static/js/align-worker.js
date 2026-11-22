@@ -101,7 +101,28 @@ SCORE_FEATURE_RATE = 10  # Hz (HOP = 2205 samples)
 SCORE_HOP  = SR // SCORE_FEATURE_RATE
 SCORE_N_FFT = 4096
 SCORE_DOWNSAMPLE = 2     # pool by this factor => coarse at 5 Hz
-ONSET_N_FFT = 1024       # short window (46 ms) for sharp onset detection
+# The fine pass (0.143.0): a banded DTW at SCORE_FINE_RATE around the coarse
+# path, with chroma + DLNCO onset costs (see compute_dlnco). 0 = off, which
+# returns exactly the coarse-only table of 0.142 and before.
+SCORE_FINE_RATE_DEFAULT = 25  # Hz; the option scoreFineRate (0 = off)
+SCORE_FINE_RATE = SCORE_FINE_RATE_DEFAULT
+SCORE_FINE_SLACK_SEC = 2.0  # band half-width around the coarse path
+# The lead-in (0.147.0): seconds of silence put before the synthesised score,
+# within which the score's alignment may START (a subsequence DTW with the
+# score's entry free inside its pad; the reference span is consumed in full
+# from its start). detect_music_span errs outward on purpose, so the span can
+# begin up to ~2-3 s before the music, and with both corners pinned the first
+# note landed in that silence: early by a median 0.86 s on 45 of 57 (n)ASAP
+# piano performances, 2.0 s on Fledermaus VPO-2022. Measured 2026-11-19
+# (working-docs tools/score-open-ends-2026-11-19): first note median 0.00 s,
+# first-5-onset error 135 -> 71 ms, body unchanged; freeing the RECORDING's
+# ends instead failed (trap 2 of the open ends: the exit runs to its bound).
+# A multiple of 0.2 s (a coarse frame, whole fine frames): a pad of 37.5 fine
+# frames shifted every note by +12 ms. Used with the fine pass only.
+SCORE_LEAD_IN_SEC_DEFAULT = 3.0  # the option scoreLeadIn (0 = off)
+SCORE_LEAD_IN_SEC = SCORE_LEAD_IN_SEC_DEFAULT
+ONSET_N_FFT = 1024      # short window (46 ms) for sharp onset detection
+ONSET_SMOOTH = 5         # moving-average width (frames) over the onset curve; 1 = off
 # (An ONSET_WEIGHT constant lived here until 0.59.0: build_score_features scaled
 # each chroma frame by 1 + weight × onset strength and L2-renormalised the
 # frame — which the per-frame normalisation cancelled exactly. Measured on
@@ -141,7 +162,7 @@ REF_CHOICE_GUARD_SHARE = 0.1  # drop a candidate more targets than this would fa
 def _apply_options():
     """Override module constants from JS _opt_* globals (if set)."""
     global FEATURE_RATE, HOP, COARSE, SLACK
-    global SCORE_DOWNSAMPLE
+    global SCORE_DOWNSAMPLE, SCORE_FINE_RATE, SCORE_LEAD_IN_SEC
     v = int(_opt_feature_rate) if int(_opt_feature_rate) > 0 else None
     if v:
         FEATURE_RATE = v
@@ -155,6 +176,13 @@ def _apply_options():
     v = int(_opt_score_downsample) if int(_opt_score_downsample) > 0 else None
     if v:
         SCORE_DOWNSAMPLE = v
+    # Unlike the others, 0 is a value (off); negative or unset = the default,
+    # reset per batch so one run's choice never leaks into the next.
+    v = int(globals().get('_opt_score_fine_rate', -1))
+    SCORE_FINE_RATE = v if v >= 0 else SCORE_FINE_RATE_DEFAULT
+    # The lead-in likewise (0 = off), rounded to whole 0.2 s steps.
+    v = float(globals().get('_opt_score_lead_in', -1))
+    SCORE_LEAD_IN_SEC = round(v * 5.0) / 5.0 if v >= 0 else SCORE_LEAD_IN_SEC_DEFAULT
 
 
 def _stft_setup(audio, n_fft, hop):
@@ -211,10 +239,14 @@ def compute_chroma_score(audio):
     return compute_chroma(audio, n_fft=SCORE_N_FFT, hop=SCORE_HOP)
 
 
-def compute_onset_strength(audio, hop=None):
+def compute_onset_strength(audio, hop=None, smooth=None):
     """Spectral-flux onset strength — fully streaming.
     Uses ONSET_N_FFT short window for temporal resolution; hop defaults to
     SCORE_HOP, overridable (the fix-mode lanes pass their own fine hop).
+    smooth: the centred moving average's width in frames (ONSET_SMOOTH;
+    1 = none). The average delays a peak, since an onset's flux rises
+    sharply and tails off: 5 frames at hop 512 put piano onsets ~25 ms late
+    against ~1 ms for 1 frame at hop 256 (measured 2026-11-11).
     Peak extra memory: 2 * ONSET_N_FFT/2 floats (current + prev frame).
     """
     n_fft = ONSET_N_FFT
@@ -247,8 +279,12 @@ def compute_onset_strength(audio, hop=None):
                 flux[cs + 1:ce] = diff.mean(axis=1)
         prev_frame = mag[-1].copy()
         del mag
-    kernel = np.ones(5, dtype=np.float32) / np.float32(5.0)
-    flux = np.convolve(flux, kernel, mode='same').astype(np.float32)
+    if smooth is None:
+        smooth = ONSET_SMOOTH
+    smooth = int(smooth)
+    if smooth > 1:
+        kernel = np.ones(smooth, dtype=np.float32) / np.float32(smooth)
+        flux = np.convolve(flux, kernel, mode='same').astype(np.float32)
     mx = flux.max()
     if mx > 1e-8:
         flux /= mx
@@ -265,6 +301,116 @@ def _pool_features(feat, factor):
     norms = np.linalg.norm(pooled, axis=0, keepdims=True)
     norms[norms < 1e-8] = np.float32(1.0)
     return (pooled / norms).astype(np.float32)
+
+
+# --- DLNCO onset features for the score fine pass (0.143.0) ---
+#
+# Decaying, locally adaptively normalised chroma onsets after S. Ewert,
+# M. Müller, P. Grosche, "High Resolution Audio Synchronization Using Chroma
+# Onset Features", ICASSP 2009, pp. 1869-1872. The parameters (0.8 s local
+# max norm, floor 0.1, sqrt(1/n) decay over 0.2 s, the 2/3 block-max peak
+# rule, cosine + Euclidean cost) are those of the Sync Toolbox (M. Müller,
+# Y. Özer, M. Krause, T. Prätzlich, J. Driedger, JOSS 6(64):3434, 2021,
+# feature/dlnco.py, feature/pitch_onset.py, dtw/cost.py). Unlike the Sync
+# Toolbox, the per-pitch-class onsets come from an STFT (half-wave rectified
+# log-magnitude difference folded to pitch classes), not from its IIR pitch
+# filterbank. Ported from the offline prototype of 2026-10-23, which was
+# measured against real ground truth on 2026-11-19.
+
+DLNCO_N_FFT = 2048          # STFT window of the onset features
+DLNCO_FMIN = 100.0          # Hz; bins at or below are ignored
+DLNCO_PEAK_BLOCK_SEC = 0.25 # peaks below 2/3 of their block's maximum are dropped
+DLNCO_NORM_SEC = 0.8        # local max-filter normalisation window
+DLNCO_NORM_FLOOR = 0.1      # ... and its floor
+DLNCO_DECAY_SEC = 0.2       # sqrt(1/n) decay after each onset
+DLNCO_WEIGHT = 1.0          # onset cost weight against the chroma cost
+
+
+def _onset_logdiff_pc(audio, hop):
+    """Per pitch class and frame: the sum over bins of the half-wave rectified
+    difference of log(1 + |X|) between consecutive frames. Streaming, like
+    compute_chroma. Frame 0 has no predecessor and stays 0."""
+    n_fft = DLNCO_N_FFT
+    audio = np.asarray(audio, dtype=np.float32)
+    pk = float(np.max(np.abs(audio))) or 1.0
+    audio = audio / pk
+    audio_pad, window, n_frames, s = _stft_setup(audio, n_fft, hop)
+    freqs = np.fft.rfftfreq(n_fft, d=1.0 / SR)
+    valid = freqs > DLNCO_FMIN
+    midi_f = 69.0 + 12.0 * np.log2(np.maximum(freqs[valid], 1e-9) / 440.0)
+    pc = np.round(midi_f).astype(int) % 12
+    masks = [pc == k for k in range(12)]
+    out = np.zeros((12, n_frames), dtype=np.float32)
+    prev = None
+    CHUNK = 256
+    for cs in range(0, n_frames, CHUNK):
+        ce = min(n_frames, cs + CHUNK)
+        frames = np.lib.stride_tricks.as_strided(
+            audio_pad[cs * hop:],
+            shape=(ce - cs, n_fft),
+            strides=(s * hop, s)
+        )
+        mag = np.log1p(np.abs(np.fft.rfft(frames * window, axis=1)[:, valid])).astype(np.float32)
+        ext = mag if prev is None else np.vstack([prev[None, :], mag])
+        d = np.maximum(np.float32(0), ext[1:] - ext[:-1])
+        o0 = cs + (1 if prev is None else 0)
+        for k in range(12):
+            out[k, o0:ce] = d[:, masks[k]].sum(axis=1)
+        prev = mag[-1].copy()
+        del mag, ext, d
+    return out
+
+
+def _onset_peaks(co, rate):
+    """Keep per-band local maxima (+-2 frames) at or above 2/3 of the band's
+    maximum within blocks of DLNCO_PEAK_BLOCK_SEC; zero elsewhere."""
+    T = co.shape[1]
+    out = np.zeros_like(co)
+    pad = np.pad(co, ((0, 0), (2, 2)), constant_values=-1)
+    lm = np.ones_like(co, dtype=bool)
+    for sft in (-2, -1, 1, 2):
+        lm &= co >= pad[:, 2 + sft: 2 + sft + T]
+    blk = max(1, int(round(DLNCO_PEAK_BLOCK_SEC * rate)))
+    nb = (T + blk - 1) // blk
+    bm = np.pad(co, ((0, 0), (0, nb * blk - T))).reshape(12, nb, blk).max(axis=2)
+    thr = np.repeat(bm, blk, axis=1)[:, :T] * (2.0 / 3.0)
+    keep = lm & (co >= thr) & (co > 0)
+    out[keep] = co[keep]
+    return out
+
+
+def _dlnco(co, rate):
+    """Peak-picked onsets (12, T) -> DLNCO (12, T): scaled by the 99th
+    percentile frame norm, divided by a local max-filtered norm (floored),
+    then each onset decays as sqrt(1/n)."""
+    T = co.shape[1]
+    nrm = np.linalg.norm(co, axis=0)
+    nz = nrm[nrm > 0]
+    scale = np.percentile(nz, 99) if nz.size else 1.0
+    co = co / max(scale, 1e-9)
+    nrm = nrm / max(scale, 1e-9)
+    L = int(DLNCO_NORM_SEC * rate)
+    L -= L % 2
+    h = L // 2
+    ln = np.lib.stride_tricks.sliding_window_view(np.pad(nrm, (h, h)), 2 * h + 1).max(axis=1)[:T]
+    ln = np.maximum(ln, DLNCO_NORM_FLOOR)
+    lnco = co / ln[None, :]
+    n = max(1, int(round(DLNCO_DECAY_SEC * rate)))
+    coef = np.sqrt(1.0 / np.arange(1, n + 1))
+    out = lnco * coef[0]
+    for k in range(1, n):
+        sh = np.zeros_like(lnco)
+        sh[:, k:] = lnco[:, :-k] * coef[k]
+        out = np.maximum(out, sh)
+    return out.astype(np.float32)
+
+
+def compute_dlnco(audio, hop):
+    """DLNCO onset features (12, n_frames) at hop, frames as compute_chroma's
+    with n_fft = DLNCO_N_FFT (centre each frame on a chroma frame before use:
+    see _score_fine_features)."""
+    rate = SR / hop
+    return _dlnco(_onset_peaks(_onset_logdiff_pc(audio, hop), rate), rate)
 
 
 def synth_midi_audio(notes, tpq, tcs, duration):
@@ -452,7 +598,7 @@ def _dtw_f32(C, open_ends=False, entry_max=None, exit_min=None):
     return np.array([pi, pj])
 
 
-def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
+def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi, costfn=None):
     """Streaming band DTW guided by per-row column bounds.
 
     Memory profile (regardless of audio length):
@@ -468,6 +614,10 @@ def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
     ref_chroma : (12, N) float32
     other_chroma: (12, M) float32
     j_lo, j_hi : (N,) int32  inclusive band col bounds per row
+    costfn     : optional costfn(i, lo, hi) -> (hi - lo + 1,) row costs in
+                 place of the cosine cost (the score fine pass adds DLNCO
+                 onset costs). None = the cosine cost, exactly as before; the
+                 audio pairs and fix mode never pass one.
     Returns warping path (2, L).
     """
     N = ref_chroma.shape[1]
@@ -485,10 +635,13 @@ def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
         lo = int(j_lo[i]); hi = int(j_hi[i]); bw = hi - lo + 1
 
         # ── cost vector for this row's band (one fast matmul) ──────────────
-        costs = np.clip(
-            1.0 - ref_chroma[:, i] @ other_chroma[:, lo : hi + 1],
-            0, 2
-        ).astype(np.float32)                                  # (bw,)
+        if costfn is None:
+            costs = np.clip(
+                1.0 - ref_chroma[:, i] @ other_chroma[:, lo : hi + 1],
+                0, 2
+            ).astype(np.float32)                              # (bw,)
+        else:
+            costs = costfn(i, lo, hi).astype(np.float32)      # (bw,)
 
         # ── diagonal and vertical predecessors (numpy, no loop) ────────────
         # d_prev[lo-1 : hi] for diagonal; pad with inf at the left boundary
@@ -1422,11 +1575,18 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
          run fully unconstrained DTW on the small matrix.  This captures
          global structure — the essential fix for the 'random' failure mode
          that plagued a single-level SC-band approach.
-      5. Map each deduplicated note onset/offset through the coarse warping
-         path via linear interpolation → final score-to-audio alignment.
+      5. Fine pass (SCORE_FINE_RATE > 0, since 0.143.0): fix mode's banded
+         DTW (_fix_guided_warp) at SCORE_FINE_RATE, +- SCORE_FINE_SLACK_SEC
+         around the coarse path, on chroma plus DLNCO onset costs
+         (_score_fine_features). With SCORE_FINE_RATE = 0 the coarse path
+         maps the notes, exactly as before 0.143.0.
+      6. Map each deduplicated note onset/offset through the warping path
+         via linear interpolation → final score-to-audio alignment.
 
     Returns dict: score_onset, ref_onset, score_offset, ref_offset
-    (score times in quarter-notes; ref times in seconds).
+    (score times in quarter-notes; ref times in seconds), synth_onset /
+    synth_offset, and score_aligner: the provenance stamp of what ran
+    (the caller moves it to header.scoreAligner).
     """
     t0_total = _time.time()
     reportStep("score", "start", "Score alignment", None, None, None)
@@ -1457,32 +1617,106 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
     reportProgress("Score alignment: synthesising MIDI audio...", None)
     synth_audio = synth_midi_audio(notes, tpq, tcs, midi_dur)
 
+    fine_rate = int(SCORE_FINE_RATE)
+    # The lead-in (see SCORE_LEAD_IN_SEC): silence before the synthesised
+    # score; a_dur is the synth's length with it, and every score time is
+    # read lead seconds later on that axis.
+    lead = float(SCORE_LEAD_IN_SEC) if fine_rate > 0 else 0.0
+    a_dur = midi_dur
+    if lead > 0:
+        synth_audio = np.concatenate([np.zeros(int(round(lead * SR)), dtype=np.float32), synth_audio])
+        a_dur = len(synth_audio) / SR
     reportProgress("Score alignment: extracting chroma features...", None)
     sc_feat = compute_chroma_score(synth_audio)
-    del synth_audio
+    if fine_rate <= 0:
+        del synth_audio
     rc_feat = compute_chroma_score(ref_audio)
+    fine = None
+    if fine_rate > 0:
+        # Before the coarse DTW, so the synth PCM is gone before the coarse
+        # cost matrix exists (peak memory = the larger stage, not the sum).
+        reportProgress("Score alignment: extracting onset features...", None)
+        fine = _score_fine_features(synth_audio, ref_audio, fine_rate)
+        del synth_audio
 
     # --- Coarse DTW (unconstrained) on downsampled features ---
     reportProgress("Score alignment: coarse DTW...", None)
     sc_c = _pool_features(sc_feat, SCORE_DOWNSAMPLE)
     rc_c = _pool_features(rc_feat, SCORE_DOWNSAMPLE)
-    del sc_feat, rc_feat   # no fine-DTW pass needed
+    del sc_feat, rc_feat
     n_sc_c = sc_c.shape[1]
     n_rc_c = rc_c.shape[1]
 
     C_c = (np.float32(1.0) - sc_c.T @ rc_c).astype(np.float32)
     np.clip(C_c, 0, 2, out=C_c)
     del sc_c, rc_c
-    # Pass band=max(shape) to dtw_band → effectively unconstrained
-    wp_c = make_monotonic(dtw_band(C_c, max(C_c.shape)))
+    if lead > 0:
+        # The score may START anywhere inside its lead-in; the reference span
+        # is consumed in full from its start, the end stays pinned: the
+        # subsequence DTW of the audio pairs, transposed (rows = reference).
+        e_max = int(np.floor(lead * SCORE_FEATURE_RATE / SCORE_DOWNSAMPLE))
+        wp_c = _dtw_f32_rows(np.ascontiguousarray(C_c.T), open_ends=True,
+                             entry_max=e_max, exit_min=n_sc_c - 1)
+        wp_c = make_monotonic(wp_c[::-1])
+    else:
+        # Pass band=max(shape) to dtw_band → effectively unconstrained
+        wp_c = make_monotonic(dtw_band(C_c, max(C_c.shape)))
     del C_c
 
     # Coarse path → time mapping (each frame spans SCORE_DOWNSAMPLE * SCORE_HOP seconds)
-    sc_times_c = wp_c[0].astype(np.float64) * midi_dur / max(n_sc_c - 1, 1)
+    sc_times_c = wp_c[0].astype(np.float64) * a_dur / max(n_sc_c - 1, 1)
     rc_times_c = (wp_c[1].astype(np.float64) * span_dur / max(n_rc_c - 1, 1)
                   + span_from)
     del wp_c
     wf = lambda xq: interp_linear_extrap(sc_times_c, rc_times_c, xq)
+    stamp = _score_aligner_stamp(None)
+
+    if fine is not None:
+        reportProgress("Score alignment: fine DTW...", None)
+        fs, fr, oa, ob, d = fine
+        del fine
+        # With a lead-in the score starts where the coarse path entered it:
+        # cut its fine features there, on their own frame grid (the banded DTW
+        # seeds only its origin cell, so a cut is how it inherits a free start).
+        # The reference likewise, at the coarse path's first point after
+        # make_monotonic (which keeps the LAST point of the opening run where
+        # the reference advances while the score waits in its lead-in), on the
+        # full span's frame -> time map. This is the configuration measured.
+        a_lo = 0.0
+        b_lo, b_hi = span_from, span_to
+        if lead > 0 and fs.shape[1] >= 2 and fr.shape[1] >= 2:
+            step_a = a_dur / max(fs.shape[1] - 1, 1)
+            i0 = int(np.clip(np.floor(sc_times_c[0] / step_a), 0, fs.shape[1] - 2))
+            a_lo = i0 * step_a
+            fs = fs[:, i0:]; oa = oa[:, i0:]
+            n_b = fr.shape[1]
+            step_b = span_dur / max(n_b - 1, 1)
+            k0 = int(np.clip(np.floor((rc_times_c[0] - span_from) / step_b), 0, n_b - 2))
+            k1 = int(np.clip(np.ceil((rc_times_c[-1] - span_from) / step_b), k0 + 1, n_b - 1))
+            if k0 > 0 or k1 < n_b - 1:
+                b_lo, b_hi = span_from + k0 * step_b, span_from + k1 * step_b
+                fr = fr[:, k0:k1 + 1]; ob = ob[:, k0:k1 + 1]
+        if fs.shape[1] < 2 or fr.shape[1] < 2:
+            stamp = _score_aligner_stamp(None, "too short for the fine pass")
+            # The coarse map is on the lead-in axis: read score times there.
+            wf_c = wf
+            wf = lambda xq: wf_c(np.asarray(xq) + lead)
+        else:
+            def costfn(i, lo, hi):
+                cc = np.clip(1.0 - fs[:, i] @ fr[:, lo: hi + 1], 0, 2)
+                return cc + DLNCO_WEIGHT * np.sqrt(
+                    ((ob[:, lo: hi + 1] - oa[:, i: i + 1]) ** 2).sum(axis=0))
+            # The coarse path as knots: no new DTW, fix mode's banded one, whose
+            # band handling (corner seeding, bridged floors) the score pass
+            # inherits. Never call _guided_band_dtw directly here: it seeds only
+            # its origin cell.
+            wf_l = _fix_guided_warp(fs, fr, a_lo, a_dur, b_lo, b_hi,
+                                    sc_times_c, rc_times_c, SCORE_FINE_SLACK_SEC,
+                                    "score fine pass", costfn)
+            wf = (lambda xq: wf_l(np.asarray(xq) + lead)) if lead > 0 else wf_l
+            stamp = _score_aligner_stamp(fine_rate, None, d,
+                                         (lead, max(0.0, a_lo)) if lead > 0 else None)
+        del fs, fr, oa, ob
 
     # Deduplicate chord notes: one entry per unique (onset_tick, offset_tick)
     seen = {}
@@ -1510,7 +1744,71 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
         "ref_offset":   r_off,
         "synth_onset":  s_on_sec,   # listen.js uses these to build the synth waveform’s alignment grid
         "synth_offset": s_off_sec,
+        "score_aligner": stamp,
     }
+
+
+def _score_fine_features(synth_audio, ref_audio, rate):
+    """The fine pass's features at rate Hz: chroma (SCORE_N_FFT) and DLNCO
+    onsets (DLNCO_N_FFT) for the synth and the reference. The two STFT
+    windows differ, so frame k of the onsets is centred (n_fft - DLNCO_N_FFT)
+    / 2 samples before chroma frame k: shift the onsets by d frames, rounded
+    (one frame at 25 Hz), and match the chroma frame counts. Without the
+    shift the alignment comes out a plausible 20-40 ms off.
+    Returns (fs, fr, oa, ob, d)."""
+    hop = SR // int(rate)
+    fs = compute_chroma(synth_audio, n_fft=SCORE_N_FFT, hop=hop)
+    fr = compute_chroma(ref_audio, n_fft=SCORE_N_FFT, hop=hop)
+    d = max(0, int(round((SCORE_N_FFT - DLNCO_N_FFT) / 2 / hop)))
+    def fit(o, n):
+        o = o[:, d:d + n]
+        return np.pad(o, ((0, 0), (0, n - o.shape[1]))) if o.shape[1] < n else o
+    oa = fit(compute_dlnco(synth_audio, hop), fs.shape[1])
+    ob = fit(compute_dlnco(ref_audio, hop), fr.shape[1])
+    return fs, fr, oa, ob, d
+
+
+SCORE_ALIGNER_REFERENCES = [
+    "S. Ewert, M. Müller, P. Grosche: High Resolution Audio Synchronization "
+    "Using Chroma Onset Features. ICASSP 2009, pp. 1869-1872 (DLNCO features)",
+    "M. Müller, Y. Özer, M. Krause, T. Prätzlich, J. Driedger: Sync Toolbox: "
+    "A Python Package for Efficient, Robust, and Accurate Music Synchronization. "
+    "JOSS 6(64):3434, 2021, doi:10.21105/joss.03434 (DLNCO parameters; onsets "
+    "here from an STFT, not its IIR filterbank)",
+]
+
+
+def _score_aligner_stamp(fine_rate, skipped=None, onset_shift=None, lead_in=None):
+    """header.scoreAligner: what score_align actually ran, in Hz and
+    seconds. Provenance only; nothing reads it back as an option (the
+    options live in header.alignmentParams)."""
+    stamp = {
+        "method": "chroma-dtw",
+        "coarseRateHz": SCORE_FEATURE_RATE / SCORE_DOWNSAMPLE,
+        "chromaNfft": SCORE_N_FFT,
+    }
+    if skipped:
+        stamp["fineSkipped"] = skipped
+    if fine_rate:
+        stamp["method"] = "chroma-dtw+dlnco-fine"
+        stamp["fine"] = {
+            "rateHz": float(fine_rate),
+            "slackSec": SCORE_FINE_SLACK_SEC,
+            "onsetWeight": DLNCO_WEIGHT,
+            "onsetNfft": DLNCO_N_FFT,
+            "onsetShiftFrames": onset_shift,
+            "fminHz": DLNCO_FMIN,
+            "peakBlockSec": DLNCO_PEAK_BLOCK_SEC,
+            "normSec": DLNCO_NORM_SEC,
+            "normFloor": DLNCO_NORM_FLOOR,
+            "decaySec": DLNCO_DECAY_SEC,
+        }
+        stamp["references"] = list(SCORE_ALIGNER_REFERENCES)
+    if lead_in:
+        # entrySec: where the fine pass began on the lead-in axis (score time +
+        # sec); at or past sec: the music began at once in the reference span.
+        stamp["leadIn"] = {"sec": float(lead_in[0]), "entrySec": round(float(lead_in[1]), 3)}
+    return stamp
 
 
 # --- Fix-mode (hand-correction) session — plan section 14, increment 1 ---
@@ -1529,6 +1827,18 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
 FIX_MIN_HOP = 512        # samples (~23 ms) — floor for short segments
 FIX_MAX_FRAMES = 6000    # frame cap; full piece lands near SCORE_HOP
 FIX_SLACK_SEC = 4.0      # default band half-width around the prior map
+# The refill's method (0.145.0): 'chroma' (the DTW of 0.144 and before),
+# 'dlnco' (the same DTW with the onset cost of the score fine pass), or
+# 'shift' (no DTW: the prior keeps its shape and takes the anchors'
+# corrections, each fading as exp(-distance / FIX_SHIFT_TAU_SEC) in prior
+# time). Measured 2026-11-19 against 2,115 human anchors (working-docs
+# tools/refill-onsets-2026-11-19): on a 0.143.0 fine-pass table, shift is
+# never worse than the table itself and better in the median at every
+# anchor spacing, while chroma makes it worse (p90 80 -> 138-233 ms) and
+# dlnco nearly recovers it; on older tables dlnco is the robust choice. The
+# client picks by header.scoreAligner. tau was chosen on those anchors.
+FIX_SHIFT_TAU_SEC = 1.0
+FIX_REFILL_METHODS = ('chroma', 'dlnco', 'shift')
 
 _fix = None
 
@@ -1574,13 +1884,43 @@ def fix_begin(ref_audio, midi_bytes_py):
         'midi_duration': midi_dur,
     }
 
+def fix_begin_audio(ref_audio):
+    """Bootstrap a SCORE-LESS correction session: the reference alone, no MIDI
+    and no synth. The target ops (fix_target_*) and the lanes work on top of it
+    unchanged; the tick set comes from fix_ref_onsets."""
+    global _fix
+    ref = np.asarray(ref_audio, dtype=np.float32)
+    _fix = {'ref': ref, 'ref_dur': len(ref) / SR}
+    return {'n_events': 0, 'ref_duration': _fix['ref_dur']}
+
+def fix_ref_onsets(hop=None, smooth=None):
+    """The reference's detected onsets — the tick set of a score-less session —
+    with one perceived attack per onset (index-aligned). At LANE_HOP and
+    ONSET_SMOOTH unless the client passes the onset-detector trial's values
+    (which it does only for a session with no saved anchors), never the lane
+    display's configurable hop, so the ticks (and the anchors keyed by them)
+    do not move when the user re-configures the lanes."""
+    if _fix is None:
+        raise RuntimeError('fix_ref_onsets before fix_begin')
+    hop = LANE_HOP if hop is None else int(hop)
+    smooth = ONSET_SMOOTH if smooth is None else int(smooth)
+    ref = _fix['ref']
+    onset = compute_onset_strength(ref, hop=hop, smooth=smooth)
+    peaks = pick_onset_peaks(onset, hop)
+    return {
+        'hop': hop,
+        'smooth': smooth,
+        'peaks': [float(t) for t in peaks],
+        'pat': [float(t) for t in perceptual_attack_times(ref, peaks, hop)],
+    }
+
 def _fix_features(audio, lo_sec, hi_sec, hop):
     """Per-frame L2-normalised chroma for one audio slice at the segment's hop."""
     lo = max(0, int(lo_sec * SR))
     hi = min(len(audio), int(hi_sec * SR))
     return compute_chroma(audio[lo:hi], n_fft=SCORE_N_FFT, hop=hop)
 
-def _fix_guided_warp(feat_a, feat_b, a_lo, a_hi, b_lo, b_hi, knots_a, knots_b, slack, who):
+def _fix_guided_warp(feat_a, feat_b, a_lo, a_hi, b_lo, b_hi, knots_a, knots_b, slack, who, costfn=None):
     """The anchored refill's core, shared by the score-to-reference and the
     audio-to-audio corrections: a guided band DTW between two feature slices
     whose corners ARE the two anchors. The band is centred on the PRIOR
@@ -1622,21 +1962,29 @@ def _fix_guided_warp(feat_a, feat_b, a_lo, a_hi, b_lo, b_hi, knots_a, knots_b, s
     # min of two non-decreasing sequences, so j_lo stays non-decreasing.
     j_lo[1:] = np.minimum(j_lo[1:], j_hi[:-1] + 1)
 
-    wp = make_monotonic(_guided_band_dtw(feat_a, feat_b, j_lo, j_hi))
+    wp = make_monotonic(_guided_band_dtw(feat_a, feat_b, j_lo, j_hi, costfn))
     a_path = a_lo + wp[0].astype(np.float64) * seg_a / max(n_a - 1, 1)
     b_path = b_lo + wp[1].astype(np.float64) * seg_b / max(n_b - 1, 1)
     return lambda xq: interp_linear_extrap(a_path, b_path, xq)
 
-def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frames=None):
+def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frames=None,
+                        method=None, prior_a=None, prior_b=None):
     """Re-fill ref onsets/offsets for the events strictly between two anchors.
 
     i_a / i_b: bounding event indices (-1 = piece-start corner, n_events =
     piece-end corner); t_a / t_b: their (corrected) reference times.
     prior_ref: the CURRENT ref_onset values of the interior events, used as
     the DTW guide band's centre (tapered onto the anchors, +- slack_sec).
+    method: 'chroma' (default), 'dlnco', or 'shift' (see FIX_SHIFT_TAU_SEC).
+    prior_a / prior_b: for 'shift', the two anchor events' times BEFORE this
+    edit (default: t_a / t_b, i.e. no correction at that end).
     Returns interior ref_onset / ref_offset, the anchor event i_a's remapped
-    offset when it falls inside the segment, and the hop actually used.
+    offset when it falls inside the segment, the hop actually used (0 for
+    'shift'), and the method.
     """
+    method = 'chroma' if method is None else str(method)
+    if method not in FIX_REFILL_METHODS:
+        raise ValueError('fix_realign_segment: unknown method ' + method)
     if _fix is None:
         raise RuntimeError('fix_realign_segment before fix_begin')
     slack = FIX_SLACK_SEC if slack_sec is None else float(slack_sec)
@@ -1655,19 +2003,54 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
     if len(prior_ref) != len(interior):
         raise ValueError('fix_realign_segment: prior_ref length mismatch')
     if not interior:
-        return {'ref_onset': [], 'ref_offset': [], 'anchor_a_offset': None, 'hop': 0}
+        return {'ref_onset': [], 'ref_offset': [], 'anchor_a_offset': None, 'hop': 0,
+                'method': method}
 
-    # Hop adapts to the segment: fine frames when short, capped for length.
     seg_s = s_b - s_a; seg_r = t_b - t_a
-    hop = max(FIX_MIN_HOP, int(np.ceil(max(seg_s, seg_r) * SR / cap)))
-    feat_s = _fix_features(_fix['synth'], s_a, s_b, hop)
-    feat_r = _fix_features(_fix['ref'], t_a, t_b, hop)
-    wf = _fix_guided_warp(
-        feat_s, feat_r, s_a, s_b, t_a, t_b,
-        [s_a] + [float(s_on[i]) for i in interior] + [s_b],
-        [t_a] + [float(v) for v in prior_ref] + [t_b],
-        slack, 'fix_realign_segment',
-    )
+    shifted = None
+    if method == 'shift':
+        # No DTW: each interior onset keeps its prior time plus the anchors'
+        # corrections, fading with its distance from each (weights normalised
+        # where they sum above 1, so a short segment approaches a linear
+        # blend). Offsets follow the shifted onsets as the segment's map.
+        hop = 0
+        p_a = t_a if prior_a is None else float(prior_a)
+        p_b = t_b if prior_b is None else float(prior_b)
+        inner = np.asarray(prior_ref, dtype=np.float64)
+        w_a = np.exp(-np.maximum(inner - p_a, 0.0) / FIX_SHIFT_TAU_SEC)
+        w_b = np.exp(-np.maximum(p_b - inner, 0.0) / FIX_SHIFT_TAU_SEC)
+        corr = (w_a * (t_a - p_a) + w_b * (t_b - p_b)) / np.maximum(w_a + w_b, 1.0)
+        shifted = np.maximum.accumulate(np.clip(inner + corr, t_a, t_b))
+        ks, first = np.unique(np.array([s_a] + [float(s_on[i]) for i in interior] + [s_b]),
+                              return_index=True)
+        kr = np.maximum.accumulate(np.concatenate([[t_a], shifted, [t_b]])[first])
+        wf = lambda xq: interp_linear_extrap(ks, kr, xq)
+    else:
+        # Hop adapts to the segment: fine frames when short, capped for length.
+        hop = max(FIX_MIN_HOP, int(np.ceil(max(seg_s, seg_r) * SR / cap)))
+        feat_s = _fix_features(_fix['synth'], s_a, s_b, hop)
+        feat_r = _fix_features(_fix['ref'], t_a, t_b, hop)
+        costfn = None
+        if method == 'dlnco':
+            # The score fine pass's onset cost (compute_dlnco), on the same
+            # slices, centred on the chroma frames as in _score_fine_features.
+            d = max(0, int(round((SCORE_N_FFT - DLNCO_N_FFT) / 2 / hop)))
+            def _ons(audio, lo_sec, hi_sec, n):
+                lo = max(0, int(lo_sec * SR)); hi = min(len(audio), int(hi_sec * SR))
+                o = compute_dlnco(audio[lo:hi], hop)[:, d:d + n]
+                return np.pad(o, ((0, 0), (0, n - o.shape[1]))) if o.shape[1] < n else o
+            oa = _ons(_fix['synth'], s_a, s_b, feat_s.shape[1])
+            ob = _ons(_fix['ref'], t_a, t_b, feat_r.shape[1])
+            def costfn(i, lo, hi):
+                cc = np.clip(1.0 - feat_s[:, i] @ feat_r[:, lo: hi + 1], 0, 2)
+                return cc + DLNCO_WEIGHT * np.sqrt(
+                    ((ob[:, lo: hi + 1] - oa[:, i: i + 1]) ** 2).sum(axis=0))
+        wf = _fix_guided_warp(
+            feat_s, feat_r, s_a, s_b, t_a, t_b,
+            [s_a] + [float(s_on[i]) for i in interior] + [s_b],
+            [t_a] + [float(v) for v in prior_ref] + [t_b],
+            slack, 'fix_realign_segment', costfn,
+        )
 
     # An OFFSET may legitimately lie past the segment's right edge: ties,
     # sustained notes under a moving line, any polyphonic overlap. On the
@@ -1690,7 +2073,10 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
             return float(np.clip(wf(s), t_a, t_b))
         return float(min(t_b + (s - s_b) * seg_rate, _fix['ref_dur']))
 
-    new_on  = [float(np.clip(wf(float(s_on[i])),  t_a, t_b)) for i in interior]
+    if shifted is not None:
+        new_on = [float(v) for v in shifted]
+    else:
+        new_on = [float(np.clip(wf(float(s_on[i])),  t_a, t_b)) for i in interior]
     new_off = [_map_off(s_off[i]) for i in interior]
     anchor_a_offset = _map_off(s_off[i_a]) if i_a >= 0 else None
     return {
@@ -1698,6 +2084,7 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
         'ref_offset': new_off,
         'anchor_a_offset': anchor_a_offset,
         'hop': hop,
+        'method': method,
     }
 
 # --- audio-to-audio correction (plan §14 increment 5): the target recording ---
@@ -1953,10 +2340,11 @@ def perceptual_attack_times(audio, peaks, hop):
         out.append(float(centres[k] + frac * (centres[k + 1] - centres[k])))
     return out
 
-def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, what='all', scale='mel', which='ref'):
+def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, what='all', scale='mel', which='ref', smooth=None):
     """The v2 lanes for the current correction session: the band spectrogram
-    (user-configurable FFT size, window, hop, bands, frequency scale) and —
-    unless what == 'mel', a configuration change — the fine-hop onset curve of
+    (user-configurable FFT size, window, hop, bands, frequency scale) — unless
+    what == 'onset', an onset-detector change — and, unless what == 'mel', a
+    spectrogram configuration change, the fine-hop onset curve of
     the resident audio with its picked peaks and their perceived attack times
     (the two snap-to-onset target lists). which = 'ref' | 'target' picks the
     audio on the strip: the reference, or the audio-to-audio TARGET
@@ -1971,23 +2359,24 @@ def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, wh
     else:
         ref = _fix['ref']
     onset_hop = LANE_HOP if hop is None else int(hop)
+    smooth = ONSET_SMOOTH if smooth is None else int(smooth)
     n_mels = LANE_N_MELS if n_mels is None else int(n_mels)
     n_fft = LANE_N_FFT if n_fft is None else int(n_fft)
     mel_hop = onset_hop if mel_hop is None else int(mel_hop)
     window = window if window in LANE_WINDOWS else 'hann'
     scale = scale if scale in LANE_SCALES else 'mel'
-    mel = compute_mel_spectrogram(ref, n_fft, mel_hop, n_mels, window, scale)
+    mel = None if what == 'onset' else compute_mel_spectrogram(ref, n_fft, mel_hop, n_mels, window, scale)
     out = {
         'sr': SR, 'what': what, 'which': which, 'window': window, 'n_fft': n_fft, 'n_mels': n_mels,
         'scale': scale,
         'band_hz': [float(c) for c in _band_centres(scale, n_mels, LANE_FMIN, SR / 2.0)],
-        'mel_hop': mel_hop, 'mel_frames': int(mel.shape[1]), 'mel_t0': n_fft / 2.0 / SR,
-        'mel': np.ascontiguousarray(mel),
-        'onset_hop': onset_hop, 'onset_t0': ONSET_N_FFT / 2.0 / SR,
+        'mel_hop': mel_hop, 'mel_frames': 0 if mel is None else int(mel.shape[1]), 'mel_t0': n_fft / 2.0 / SR,
+        'mel': None if mel is None else np.ascontiguousarray(mel),
+        'onset_hop': onset_hop, 'onset_smooth': smooth, 'onset_t0': ONSET_N_FFT / 2.0 / SR,
         'onset_frames': 0, 'onset': None, 'peaks': None, 'pat': None,
     }
     if what != 'mel':
-        onset = compute_onset_strength(ref, hop=onset_hop)
+        onset = compute_onset_strength(ref, hop=onset_hop, smooth=smooth)
         peaks = pick_onset_peaks(onset, onset_hop)
         out['onset_frames'] = int(len(onset))
         out['onset'] = np.ascontiguousarray(onset, dtype=np.float32)
@@ -2022,6 +2411,52 @@ let pyodideReady = null;
 
 /** How long the three boot stages took (ms), for the fix-mode arming trail. */
 let bootTiming = null;
+
+/** fix_lanes requests run one at a time: each passes its arguments and its
+ *  result through Python globals across awaits, so a second request in flight
+ *  (the score-less reference's, or a quick run of spectrogram settings) would
+ *  overwrite the first's arrays — the first reply then carried the second's
+ *  data, and the second failed with a NameError. */
+let lanesQueue = Promise.resolve();
+
+/** One fix_lanes request, start to finish; never rejects (the queue goes on). */
+async function runFixLanes(data) {
+  try {
+    const pyodide = await pyodideReady;
+    const { hop, nMels, nFft, window: win, melHop, what, scale, which, smooth } = data;
+    pyodide.globals.set("_lanes_hop", hop ?? 512);
+    pyodide.globals.set("_lanes_smooth", smooth ?? 5);
+    pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
+    pyodide.globals.set("_lanes_n_fft", nFft ?? 2048);
+    pyodide.globals.set("_lanes_window", win || "hann");
+    pyodide.globals.set("_lanes_mel_hop", melHop ?? hop ?? 512);
+    pyodide.globals.set("_lanes_what", what || "all");
+    pyodide.globals.set("_lanes_scale", scale || "mel");
+    pyodide.globals.set("_lanes_which", which || "ref");
+    const metaJson = await pyodide.runPythonAsync(`
+import json
+_lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels), int(_lanes_n_fft),
+                   str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what),
+                   str(_lanes_scale), str(_lanes_which), int(_lanes_smooth))
+_lanes_mel = _lanes.pop('mel')
+_lanes_onset = _lanes.pop('onset')
+json.dumps(_lanes)
+`);
+    const meta = JSON.parse(metaJson);
+    const mel = meta.what === "onset" ? null : takeBuffer(pyodide, "_lanes_mel", "u8", Uint8Array);
+    const onset =
+      meta.what === "mel"
+        ? null
+        : takeBuffer(pyodide, "_lanes_onset", "f32", Float32Array);
+    await pyodide.runPythonAsync("del _lanes, _lanes_mel, _lanes_onset");
+    const transfer = [];
+    if (mel) transfer.push(mel.buffer);
+    if (onset) transfer.push(onset.buffer);
+    self.postMessage({ type: "fix_lanes", ...meta, mel, onset }, transfer);
+  } catch (err) {
+    self.postMessage({ type: "fix_lanes_error", which: data.which || "ref", message: err.toString() });
+  }
+}
 
 async function initPyodide() {
   const t0 = performance.now();
@@ -2085,7 +2520,15 @@ async function initPyodide() {
  *                                         slackSec?, maxFrames? }
  *   worker → main: "fix_target_segment" { result: { times, hop } }
  *   main → worker: "fix_target_dispose"   →   worker → main: "fix_target_disposed"
- *   "fix_lanes" takes which: "ref" | "target" for the audio on the strip.
+ *   "fix_lanes" takes which: "ref" | "target" for the audio on the strip,
+ *   smooth: the onset curve's moving-average width (frames; default 5), and
+ *   what: "all" | "mel" (the spectrogram alone) | "onset" (the onset curve and
+ *   its peaks alone; the reply's mel is null).
+ *
+ *   Score-less sessions: "fix_begin" with meiMidi null holds the reference
+ *   alone (fix_ready's events: { n_events: 0, ref_duration }); the tick set is
+ *   main → worker: "fix_ref_onsets" { hop?, smooth? }   (absent = 512 / 5)
+ *   worker → main: "fix_ref_onsets" { hop, smooth, peaks, pat } | "fix_ref_onsets_error" { message }
  *
  *   (errors at any point) worker → main: "error" { message }
  *
@@ -2114,6 +2557,9 @@ self.onmessage = async function (e) {
       pyodide.globals.set("_opt_slack", opts.slack ?? 0);
       pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
       pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
+      // 0 = off is a value here; absent (-1) = the worker's default.
+      pyodide.globals.set("_opt_score_fine_rate", opts.scoreFineRate ?? -1);
+      pyodide.globals.set("_opt_score_lead_in", opts.scoreLeadIn ?? -1);
       pyodide.globals.set("_ref_name_arg", refName);
       pyodide.globals.set("_peak_count_arg", peakCount || 0);
       pyodide.globals.set("_score_mode_arg", !!scoreMode);
@@ -2201,6 +2647,7 @@ if bool(_has_mei_arg) and _ref_audio_copy is not None:
     midi_bytes_py = bytes(_midi_bytes_arg.to_py())
     score_data = score_align(midi_bytes_py, _ref_audio_copy, str(_mei_uri_arg))
     if score_data:
+        result["header"]["scoreAligner"] = score_data.pop("score_aligner", None)
         result["body"]["score"] = score_data
         result["header"]["meiUri"] = str(_mei_uri_arg)
     del midi_bytes_py
@@ -2256,15 +2703,19 @@ json.dumps(_added)
       pyodide.globals.set("_opt_slack", opts.slack ?? 0);
       pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
       pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
+      pyodide.globals.set("_opt_score_fine_rate", opts.scoreFineRate ?? -1);
+      pyodide.globals.set("_opt_score_lead_in", opts.scoreLeadIn ?? -1);
       pyodide.globals.set("_fix_ref_data", refSamples);
       pyodide.globals.set("_fix_midi_arg", meiMidi);
       const eventsJson = await pyodide.runPythonAsync(`
 import json
 _apply_options()
 _fix_ref_arr = np.frombuffer(_fix_ref_data.to_py(), dtype=np.float32).copy()
-_fix_midi_bytes = bytes(_fix_midi_arg.to_py())
-_fix_events = fix_begin(_fix_ref_arr, _fix_midi_bytes)
-del _fix_ref_arr, _fix_midi_bytes
+if _fix_midi_arg is None:
+    _fix_events = fix_begin_audio(_fix_ref_arr)
+else:
+    _fix_events = fix_begin(_fix_ref_arr, bytes(_fix_midi_arg.to_py()))
+del _fix_ref_arr
 del globals()['_fix_ref_data']
 import gc
 gc.collect()
@@ -2286,10 +2737,10 @@ json.dumps(_fix_events)
 
     if (e.data.type === "fix_realign") {
       const pyodide = await pyodideReady;
-      const { iA, tA, iB, tB, priorRef, slackSec, maxFrames } = e.data;
+      const { iA, tA, iB, tB, priorRef, slackSec, maxFrames, method, priorA, priorB } = e.data;
       pyodide.globals.set(
         "_fix_seg_arg",
-        JSON.stringify({ iA, tA, iB, tB, priorRef, slackSec, maxFrames }),
+        JSON.stringify({ iA, tA, iB, tB, priorRef, slackSec, maxFrames, method, priorA, priorB }),
       );
       const segJson = await pyodide.runPythonAsync(`
 import json
@@ -2297,9 +2748,29 @@ _seg = json.loads(str(_fix_seg_arg))
 json.dumps(fix_realign_segment(
     _seg['iA'], _seg['tA'], _seg['iB'], _seg['tB'],
     _seg['priorRef'], _seg.get('slackSec'), _seg.get('maxFrames'),
+    _seg.get('method'), _seg.get('priorA'), _seg.get('priorB'),
 ))
 `);
       self.postMessage({ type: "fix_segment", iA, iB, result: JSON.parse(segJson) });
+      return;
+    }
+
+    if (e.data.type === "fix_ref_onsets") {
+      // A score-less session's tick set. Own error type, like the lanes: a
+      // generic "error" would be claimed by a pending realign.
+      try {
+        const pyodide = await pyodideReady;
+        // 0 = the shipped default (a JS null would cross as jsnull, not None).
+        pyodide.globals.set("_ref_onsets_hop", e.data.hop || 0);
+        pyodide.globals.set("_ref_onsets_smooth", e.data.smooth || 0);
+        const json = await pyodide.runPythonAsync(`
+import json
+json.dumps(fix_ref_onsets(_ref_onsets_hop or None, _ref_onsets_smooth or None))
+`);
+        self.postMessage({ type: "fix_ref_onsets", ...JSON.parse(json) });
+      } catch (err) {
+        self.postMessage({ type: "fix_ref_onsets_error", message: err.toString() });
+      }
       return;
     }
 
@@ -2307,39 +2778,10 @@ json.dumps(fix_realign_segment(
       // The v2 lanes (mel spectrogram, onset curve, onset peaks) for the
       // resident session. Failures post under their OWN type: a generic
       // "error" would be claimed by whatever realign the client has pending.
-      try {
-        const pyodide = await pyodideReady;
-        const { hop, nMels, nFft, window: win, melHop, what, scale, which } = e.data;
-        pyodide.globals.set("_lanes_hop", hop ?? 512);
-        pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
-        pyodide.globals.set("_lanes_n_fft", nFft ?? 2048);
-        pyodide.globals.set("_lanes_window", win || "hann");
-        pyodide.globals.set("_lanes_mel_hop", melHop ?? hop ?? 512);
-        pyodide.globals.set("_lanes_what", what || "all");
-        pyodide.globals.set("_lanes_scale", scale || "mel");
-        pyodide.globals.set("_lanes_which", which || "ref");
-        const metaJson = await pyodide.runPythonAsync(`
-import json
-_lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels), int(_lanes_n_fft),
-                   str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what),
-                   str(_lanes_scale), str(_lanes_which))
-_lanes_mel = _lanes.pop('mel')
-_lanes_onset = _lanes.pop('onset')
-json.dumps(_lanes)
-`);
-        const meta = JSON.parse(metaJson);
-        const mel = takeBuffer(pyodide, "_lanes_mel", "u8", Uint8Array);
-        const onset =
-          meta.what === "mel"
-            ? null
-            : takeBuffer(pyodide, "_lanes_onset", "f32", Float32Array);
-        await pyodide.runPythonAsync("del _lanes, _lanes_mel, _lanes_onset");
-        const transfer = [mel.buffer];
-        if (onset) transfer.push(onset.buffer);
-        self.postMessage({ type: "fix_lanes", ...meta, mel, onset }, transfer);
-      } catch (err) {
-        self.postMessage({ type: "fix_lanes_error", message: err.toString() });
-      }
+      // Queued behind any request still running (see lanesQueue).
+      const run = lanesQueue.then(() => runFixLanes(e.data));
+      lanesQueue = run;
+      await run;
       return;
     }
 
@@ -2349,7 +2791,6 @@ json.dumps(_lanes)
       self.postMessage({ type: "fix_disposed" });
       return;
     }
-
     if (e.data.type === "fix_target_begin") {
       // The audio-to-audio TARGET: a second recording resident beside the
       // reference. Failures post under their own type — a pending realign

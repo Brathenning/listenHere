@@ -449,6 +449,217 @@ print(json.dumps({
 }))
 `;
 
+// Score-less sessions (B1): the reference alone, no MIDI. The synth only
+// MAKES the test audio here; the session never sees the score.
+const HARNESS_SCORELESS = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+end_tick = max(n[1] for n in notes)
+tcs_b = [(0, 500000), (960, 375000)]
+tcs_c = [(0, 666667), (960, 333333)]
+ref = synth_midi_audio(notes, tpq, tcs_b, _tick_to_sec(end_tick, tpq, tcs_b) + 0.5)
+tgt = synth_midi_audio(notes, tpq, tcs_c, _tick_to_sec(end_tick, tpq, tcs_c) + 0.5)
+kb = [_tick_to_sec(q * tpq, tpq, tcs_b) for q in range(17)]
+kc = [_tick_to_sec(q * tpq, tpq, tcs_c) for q in range(17)]
+
+def _raises(fn):
+    try:
+        fn()
+        return False
+    except Exception:
+        return True
+before_begin = _raises(lambda: fix_ref_onsets())
+ev = fix_begin_audio(ref)
+onsets = fix_ref_onsets()
+no_synth = 'synth' not in _fix
+info = fix_target_begin('target.wav', tgt)
+raster = np.arange(0, len(ref) / SR, ANNOTATION_STEP)
+ref_a, t_a, ref_b, t_b = kb[2], kc[2], kb[14], kc[14]
+ks = [float(r) for r in raster if ref_a < r < ref_b]
+prior = [t_a + (r - ref_a) * (t_b - t_a) / (ref_b - ref_a) for r in ks]
+res = fix_target_realign(ref_a, t_a, ref_b, t_b, ks, prior, 4.0, None)
+at_onsets = []
+for q in range(3, 14):
+    i = int(np.argmin([abs(r - kb[q]) for r in ks]))
+    at_onsets.append({'q': q, 'got': res['times'][i], 'true': kc[q]})
+print(json.dumps({
+    'beforeBegin': before_begin, 'events': ev, 'refDur': len(ref) / SR,
+    'hop': onsets['hop'], 'peaks': onsets['peaks'], 'pat': onsets['pat'], 'kb': kb,
+    'noSynth': no_synth, 'info': info, 'atOnsets': at_onsets,
+}))
+`;
+
+// The score fine pass (0.143.0): score_align with and without the DLNCO fine
+// pass on the ladder under the reference's tempo map (plus a little noise, so
+// no frame ties exactly), the band DTW's cost hook, the option semantics,
+// and the onset features' centring on the chroma frames.
+const HARNESS_SCORE_FINE = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+end_tick = max(n[1] for n in notes)
+tcs_b = [(0, 500000), (960, 375000)]
+ref = synth_midi_audio(notes, tpq, tcs_b, _tick_to_sec(end_tick, tpq, tcs_b) + 0.5)
+ref = (ref + 0.01 * np.random.default_rng(1).standard_normal(len(ref))).astype(np.float32)
+truth = [_tick_to_sec(k * tpq, tpq, tcs_b) for k in range(16)]
+
+def run(rate, ds):
+    global SCORE_FINE_RATE, SCORE_DOWNSAMPLE, SCORE_LEAD_IN_SEC
+    SCORE_FINE_RATE, SCORE_DOWNSAMPLE = rate, ds
+    SCORE_LEAD_IN_SEC = 0.0  # the fine pass itself; the lead-in is 41.24's
+    return score_align(midi, ref, '')
+off, on = run(0, 2), run(25, 2)
+
+# The cost hook: None and an explicit cosine costfn decode the same path.
+A = compute_chroma(ref[: SR * 4], n_fft=SCORE_N_FFT, hop=882)
+B = compute_chroma(ref[SR // 2: SR * 4], n_fft=SCORE_N_FFT, hop=882)
+N, M = A.shape[1], B.shape[1]
+j_lo = np.zeros(N, dtype=np.int32)
+j_hi = np.minimum(M - 1, (np.arange(N) * (M - 1) // max(N - 1, 1)) + 20).astype(np.int32)
+j_hi[-1] = M - 1
+p0 = _guided_band_dtw(A, B, j_lo, j_hi)
+p1 = _guided_band_dtw(A, B, j_lo, j_hi,
+                      lambda i, lo, hi: np.clip(1.0 - A[:, i] @ B[:, lo: hi + 1], 0, 2))
+p2 = _guided_band_dtw(A, B, j_lo, j_hi, lambda i, lo, hi: np.zeros(hi - lo + 1))
+
+# Option semantics: unset or negative = the default, 0 = off, else the rate.
+opts = {}
+for v in (None, -1, 0, 50):
+    _opt_feature_rate = 0; _opt_coarse = 0; _opt_slack = 0; _opt_score_downsample = 0
+    if v is None:
+        globals().pop('_opt_score_fine_rate', None)
+    else:
+        _opt_score_fine_rate = v
+    _apply_options()
+    opts[str(v)] = SCORE_FINE_RATE
+
+# Centring: a tone starting at t0 in silence, at three phases of one frame.
+centring = []
+for t0 in (1.0, 1.013, 1.027):
+    a = np.zeros(3 * SR, dtype=np.float32)
+    n0 = int(t0 * SR)
+    a[n0:] = 0.5 * np.sin(2 * np.pi * 440.0 * np.arange(len(a) - n0) / SR)
+    fs, fr, oa, ob, d = _score_fine_features(a, a, 25)
+    k = int(np.argmax(ob[9]))
+    centre = lambda f: (f * 882 + SCORE_N_FFT / 2) / SR
+    centring.append({'t0': t0, 'd': d, 'shifted': centre(k), 'unshifted': centre(k + d),
+                     'frames': [fs.shape[1], ob.shape[1]]})
+
+print(json.dumps({
+    'truth': truth, 'off': off, 'on': on, 'opts': opts, 'centring': centring,
+    'hookSame': p0.tolist() == p1.tolist(), 'hookUsed': p0.tolist() != p2.tolist(),
+    'defaultRate': SCORE_FINE_RATE_DEFAULT,
+}))
+`;
+
+// The refill's methods (0.145.0): chroma (the default, unchanged), dlnco (the
+// fine pass's onset cost), and shift (no DTW: the prior plus the anchors'
+// corrections, fading over FIX_SHIFT_TAU_SEC). The ladder under the
+// reference's tempo map; the prior is the truth 0.1 s late.
+const HARNESS_REFILL = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+end_tick = max(n[1] for n in notes)
+tcs_b = [(0, 500000), (960, 375000)]
+ref = synth_midi_audio(notes, tpq, tcs_b, _tick_to_sec(end_tick, tpq, tcs_b) + 0.5)
+ref = (ref + 0.01 * np.random.default_rng(1).standard_normal(len(ref))).astype(np.float32)
+truth = [_tick_to_sec(k * tpq, tpq, tcs_b) for k in range(16)]
+fix_begin(ref, midi)
+late = [t + 0.1 for t in truth]
+i_a, i_b = 0, 15
+pr = late[1:15]
+
+def _raises(fn):
+    try:
+        fn()
+        return False
+    except Exception:
+        return True
+
+out = {'truth': truth, 'late': late, 'tau': FIX_SHIFT_TAU_SEC}
+out['default'] = fix_realign_segment(i_a, truth[0], i_b, truth[15], pr)
+for m in ('chroma', 'dlnco', 'shift'):
+    out[m] = fix_realign_segment(i_a, truth[0], i_b, truth[15], pr, None, None, m, late[0], late[15])
+# Shift with no correction at either end gives the prior back.
+out['shiftNone'] = fix_realign_segment(i_a, late[0], i_b, late[15], pr, None, None, 'shift')
+out['unknown'] = _raises(lambda: fix_realign_segment(i_a, truth[0], i_b, truth[15], pr, None, None, 'nope'))
+print(json.dumps(out))
+`;
+
+// The score lead-in (0.147.0): the ladder with the music at once and with
+// 2.5 s of low noise before it, the span the whole file; score_align with the
+// fine pass, lead-in 3 s and 0 (= 0.143.0); plus the option's semantics.
+const HARNESS_LEAD_IN = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+end_tick = max(n[1] for n in notes)
+tcs_b = [(0, 500000), (960, 375000)]
+music = synth_midi_audio(notes, tpq, tcs_b, _tick_to_sec(end_tick, tpq, tcs_b) + 0.5)
+truth = [_tick_to_sec(k * tpq, tpq, tcs_b) for k in range(16)]
+rng = np.random.default_rng(1)
+SCORE_FINE_RATE = 25
+SCORE_DOWNSAMPLE = 2
+out = {'truth': truth}
+for lead in (0.0, 2.5):
+    a = np.concatenate([np.zeros(int(lead * SR), dtype=np.float32), music])
+    a = (a + 0.01 * rng.standard_normal(len(a))).astype(np.float32)
+    for li in (0.0, 3.0):
+        SCORE_LEAD_IN_SEC = li
+        r = score_align(midi, a, '')
+        out['lead%g_li%g' % (lead, li)] = {'ref_onset': r['ref_onset'], 'synth_onset': r['synth_onset'],
+                                           'stamp': r['score_aligner'], 'lead': lead}
+# No lead-in without the fine pass.
+SCORE_FINE_RATE = 0
+SCORE_LEAD_IN_SEC = 3.0
+out['coarseOnly'] = score_align(midi, a, '')['score_aligner']
+opts = {}
+for v in (None, -1, 0, 3, 2.9, 1.5):
+    _opt_feature_rate = 0; _opt_coarse = 0; _opt_slack = 0; _opt_score_downsample = 0
+    if v is None:
+        globals().pop('_opt_score_lead_in', None)
+    else:
+        _opt_score_lead_in = v
+    _apply_options()
+    opts[str(v)] = SCORE_LEAD_IN_SEC
+out['opts'] = opts
+print(json.dumps(out))
+`;
+
 /** Run one python harness over align-worker.js's own PYTHON_CODE blob. */
 function execPython(harness: string, midiB64: string): any {
   const workerSrc = fs.readFileSync(
@@ -505,6 +716,30 @@ let scalesOut: any = null;
 function runScalesScenario(): any {
   if (!scalesOut) scalesOut = execPython(HARNESS_SCALES, buildMidiA().toString('base64'));
   return scalesOut;
+}
+
+let scorelessOut: any = null;
+function runScorelessScenario(): any {
+  if (!scorelessOut) scorelessOut = execPython(HARNESS_SCORELESS, buildMidiA().toString('base64'));
+  return scorelessOut;
+}
+
+let scoreFineOut: any = null;
+function runScoreFineScenario(): any {
+  if (!scoreFineOut) scoreFineOut = execPython(HARNESS_SCORE_FINE, buildMidiA().toString('base64'));
+  return scoreFineOut;
+}
+
+let leadInOut: any = null;
+function runLeadInScenario(): any {
+  if (!leadInOut) leadInOut = execPython(HARNESS_LEAD_IN, buildMidiA().toString('base64'));
+  return leadInOut;
+}
+
+let refillOut: any = null;
+function runRefillScenario(): any {
+  if (!refillOut) refillOut = execPython(HARNESS_REFILL, buildMidiA().toString('base64'));
+  return refillOut;
 }
 
 let targetOut: any = null;
@@ -855,6 +1090,105 @@ test.describe('41. alignment correction — model', () => {
     expect(r.legacyAudio).toEqual({});
     expect(r.malformed).toBe(true);
   });
+
+  test('41.19 an anchor between raster samples is made exact: the nearer flanking sample moves, else the other, else both take its time; on a sample, already exact, or not editable, nothing changes; reference ticks serialise', async ({
+    page,
+  }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const lerp = (g: number[], rg: number[], x: number) => {
+        let k = rg.findIndex((v) => v >= x);
+        if (k <= 0) k = 1;
+        return g[k - 1] + ((x - rg[k - 1]) / (rg[k] - rg[k - 1])) * (g[k] - g[k - 1]);
+      };
+      const apply = (g: number[], edits: any[]) => {
+        const out = g.slice();
+        for (const e of edits) out[e.k] = e.value;
+        return out;
+      };
+      const mono = (g: number[]) => g.every((v, k) => k === 0 || v >= g[k - 1]);
+      // The case measured live: a run at the start of the refill after the
+      // anchor put the drawn tick 103 ms off it.
+      const rg = [8.62, 8.64, 8.66, 8.68];
+      const tg = [8.6168, 8.6411, 8.8045, 8.8245];
+      const refT = 8.654783681736541;
+      const t = 8.659095796745943;
+      const measured = m.anchorExactEdits(tg, rg, refT, t);
+      const fixed = apply(tg, measured);
+      // Nearer to the LEFT sample (u = 0.25): the left one moves.
+      const rg2 = [0, 1, 2, 3];
+      const tg2 = [0, 1, 2, 3];
+      const left = m.anchorExactEdits(tg2, rg2, 1.25, 1.4);
+      // Neither one move keeps the grid nondecreasing: both take t.
+      const tg3 = [0, 1, 1.05, 1.06];
+      const both = m.anchorExactEdits(tg3, rg2, 1.5, 1.055);
+      // Only the farther sample editable: it moves instead.
+      const farOnly = m.anchorExactEdits(tg2, rg2, 1.25, 1.4, (k: number) => k === 2);
+      // Refill cannot be honoured (nothing editable), on a sample, already exact.
+      const none = m.anchorExactEdits(tg2, rg2, 1.25, 1.4, () => false);
+      const onSample = m.anchorExactEdits(tg2, rg2, 2, 2.5);
+      const exact = m.anchorExactEdits(tg2, rg2, 1.5, 1.5);
+      // Reference ticks: added sorted, refused when doubled, serialised only when present.
+      const st = m.createCorrections();
+      m.addRefTick(st, 4.2);
+      m.addRefTick(st, 1.1);
+      let doubled = false;
+      try {
+        m.addRefTick(st, 4.2);
+      } catch {
+        doubled = true;
+      }
+      const rec = m.serialize(st, null);
+      const back = m.deserialize(rec).state.refTicks;
+      const removed = m.removeRefTick(st, 1.1);
+      const emptyRec = m.serialize(m.createCorrections(), null);
+      return {
+        measured,
+        fixedAt: lerp(fixed, rg, refT),
+        fixedMono: mono(fixed),
+        beforeAt: lerp(tg, rg, refT),
+        left,
+        leftAt: lerp(apply(tg2, left), rg2, 1.25),
+        both,
+        bothMono: mono(apply(tg3, both)),
+        farOnly,
+        farAt: lerp(apply(tg2, farOnly), rg2, 1.25),
+        none,
+        onSample,
+        exact,
+        ticks: rec.refTicks,
+        back,
+        doubled,
+        removed,
+        after: st.refTicks,
+        emptyHasTicks: 'refTicks' in emptyRec,
+      };
+    });
+    expect(Math.abs(r.beforeAt - 8.659095796745943)).toBeGreaterThan(0.1); // the bug, as measured
+    expect(r.measured).toHaveLength(1);
+    expect(r.measured[0].k).toBe(2); // u ≈ 0.74: the right sample is nearer
+    expect(r.fixedAt).toBeCloseTo(8.659095796745943, 9);
+    expect(r.fixedMono).toBe(true);
+    expect(r.left).toEqual([{ k: 1, value: expect.any(Number) }]);
+    expect(r.leftAt).toBeCloseTo(1.4, 9);
+    expect(r.both).toEqual([
+      { k: 1, value: 1.055 },
+      { k: 2, value: 1.055 },
+    ]);
+    expect(r.bothMono).toBe(true);
+    expect(r.farOnly.map((e: any) => e.k)).toEqual([2]);
+    expect(r.farAt).toBeCloseTo(1.4, 9);
+    expect(r.none).toEqual([]);
+    expect(r.onSample).toEqual([]);
+    expect(r.exact).toEqual([]);
+    expect(r.ticks).toEqual([1.1, 4.2]);
+    expect(r.back).toEqual([1.1, 4.2]);
+    expect(r.doubled).toBe(true);
+    expect(r.removed).toBe(true);
+    expect(r.after).toEqual([4.2]);
+    expect(r.emptyHasTicks).toBe(false);
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -916,7 +1250,7 @@ test.describe('41. alignment correction — worker segment realign', () => {
   test('41.8 empty interiors, error paths, and the adaptive hop cap', async () => {
     const out = runWorkerScenario();
     // Consecutive anchors: nothing to refill, no DTW run.
-    expect(out.s3).toEqual({ ref_onset: [], ref_offset: [], anchor_a_offset: null, hop: 0 });
+    expect(out.s3).toEqual({ ref_onset: [], ref_offset: [], anchor_a_offset: null, hop: 0, method: 'chroma' });
     // Bad calls raise instead of returning silently wrong data.
     expect(out.s4.badIndices).toBe(true);
     expect(out.s4.reversedTimes).toBe(true);
@@ -1294,5 +1628,152 @@ test.describe('41. alignment correction — worker segment realign', () => {
       const nearest = Math.min(...out.targetPeaks.map((p: number) => Math.abs(p - out.kc[k])));
       expect(nearest, `target onset ${k} at ${out.kc[k]}`).toBeLessThan(0.05);
     }
+  });
+
+  test('41.18 score-less session: the reference alone without MIDI, its detected onsets with one perceived attack each, and the target refill on top', async () => {
+    test.setTimeout(120_000);
+    const out = runScorelessScenario();
+    expect(out.beforeBegin).toBe(true);
+    expect(out.events).toEqual({ n_events: 0, ref_duration: out.refDur });
+    expect(out.noSynth).toBe(true);
+    // The tick set: at the lanes' default hop, one attack per peak, each
+    // near its peak (usually before it, not always), and a peak at every
+    // onset of the ladder after the first (t = 0 is undetectable, as in 41.11).
+    expect(out.hop).toBe(512);
+    expect(out.pat).toHaveLength(out.peaks.length);
+    expectMonotonic(out.peaks);
+    out.pat.forEach((p: number, k: number) => {
+      expect(Math.abs(out.peaks[k] - p)).toBeLessThan(0.1);
+    });
+    for (let q = 1; q < 16; q++) {
+      const nearest = Math.min(...out.peaks.map((p: number) => Math.abs(p - out.kb[q])));
+      expect(nearest, `reference onset ${q} at ${out.kb[q]}`).toBeLessThan(0.05);
+    }
+    // The target ops need no score: the refill recovers the onsets.
+    expect(out.info.name).toBe('target.wav');
+    for (const o of out.atOnsets) {
+      expect(Math.abs(o.got - o.true), `quarter ${o.q}: got ${o.got}, true ${o.true}`).toBeLessThan(0.1);
+    }
+  });
+});
+
+test.describe('41. score fine pass (DLNCO) — worker', () => {
+  test('41.20 score_align with the fine pass: the same event table, closer to the true onsets than the coarse pass alone, and stamped', async () => {
+    test.setTimeout(120_000);
+    const out = runScoreFineScenario();
+    const { off, on, truth } = out;
+    // The event table's score side does not depend on the pass.
+    for (const k of ['score_onset', 'score_offset', 'synth_onset', 'synth_offset']) {
+      expect(on[k], k).toEqual(off[k]);
+    }
+    expect(on.ref_onset).toHaveLength(N_NOTES);
+    expectMonotonic(on.ref_onset);
+    expectMonotonic(on.ref_offset);
+    const maxErr = (r: number[]) => Math.max(...r.map((t, k) => Math.abs(t - truth[k])));
+    // Measured 2026-11-19: coarse alone (5 Hz) 89.5 ms worst, fine pass 30.0 ms.
+    expect(maxErr(on.ref_onset)).toBeLessThan(0.045);
+    expect(maxErr(on.ref_onset)).toBeLessThan(maxErr(off.ref_onset));
+    // The provenance stamp says what ran.
+    expect(off.score_aligner).toEqual({ method: 'chroma-dtw', coarseRateHz: 5, chromaNfft: 4096 });
+    const s = on.score_aligner;
+    expect(s.method).toBe('chroma-dtw+dlnco-fine');
+    expect(s.coarseRateHz).toBe(5);
+    expect(s.fine).toMatchObject({ rateHz: 25, slackSec: 2, onsetWeight: 1, onsetNfft: 2048, onsetShiftFrames: 1 });
+    expect(s.references.join(' ')).toMatch(/Ewert.*ICASSP 2009/);
+    expect(s.references.join(' ')).toMatch(/Sync Toolbox.*JOSS/);
+  });
+
+  test('41.21 the band DTW cost hook: none and an explicit cosine cost decode the same path, and a hook is really used; the option keeps 0 as off', async () => {
+    const out = runScoreFineScenario();
+    expect(out.hookSame).toBe(true);
+    expect(out.hookUsed).toBe(true);
+    expect(out.defaultRate).toBe(25);
+    expect(out.opts).toEqual({ None: 25, '-1': 25, '0': 0, '50': 50 });
+  });
+
+  test('41.22 onset features are centred on the chroma frames: a tone onset lands within half a frame, where unshifted it sits a frame late', async () => {
+    const out = runScoreFineScenario();
+    for (const c of out.centring) {
+      expect(c.d).toBe(1);
+      expect(c.frames[0]).toBe(c.frames[1]);
+      // Half a 25 Hz frame is 20 ms; measured 2026-11-19: 12.9, 0.1, 14.1 ms.
+      expect(Math.abs(c.shifted - c.t0), `onset at ${c.t0}`).toBeLessThan(0.021);
+      expect(c.unshifted - c.t0, `onset at ${c.t0}`).toBeGreaterThan(0.02);
+    }
+  });
+});
+
+test.describe('41. refill methods — worker', () => {
+  test('41.23 the refill: chroma stays the default, onsets (DLNCO) recover the truth, shift follows the anchors and fades, an unknown method is refused', async () => {
+    test.setTimeout(120_000);
+    const out = runRefillScenario();
+    const { truth, late } = out;
+    // The default is chroma, unchanged.
+    expect(out.default.ref_onset).toEqual(out.chroma.ref_onset);
+    expect(out.default.ref_offset).toEqual(out.chroma.ref_offset);
+    expect(out.default.method).toBe('chroma');
+    // DLNCO: a DTW refill like chroma, on the truth.
+    expect(out.dlnco.method).toBe('dlnco');
+    expect(out.dlnco.hop).toBe(512);
+    out.dlnco.ref_onset.forEach((t: number, k: number) => {
+      expect(Math.abs(t - truth[k + 1]), `event ${k + 1}`).toBeLessThan(0.06);
+    });
+    // Shift: no DTW. Both anchors correct the prior by -0.1 s; next to them the
+    // correction is near full, mid-segment (over 3 s from both) it has faded.
+    const s = out.shift;
+    expect(s.method).toBe('shift');
+    expect(s.hop).toBe(0);
+    expect(out.tau).toBe(1);
+    expectMonotonic(s.ref_onset);
+    expectMonotonic(s.ref_offset);
+    s.ref_onset.forEach((t: number, k: number) => {
+      const e = k + 1;
+      expect(t).toBeGreaterThanOrEqual(truth[0]);
+      expect(t).toBeLessThanOrEqual(truth[15]);
+      // Never past the truth, never later than the prior.
+      expect(t, `event ${e}`).toBeGreaterThanOrEqual(truth[e] - 1e-9);
+      expect(t, `event ${e}`).toBeLessThanOrEqual(late[e] + 1e-9);
+      const dA = late[e] - late[0];
+      const dB = late[15] - late[e];
+      if (Math.min(dA, dB) > 3) expect(late[e] - t, `event ${e} mid-segment`).toBeLessThan(0.01);
+    });
+    expect(late[1] - s.ref_onset[0]).toBeGreaterThan(0.05);
+    expect(late[14] - s.ref_onset[13]).toBeGreaterThan(0.05);
+    s.ref_offset.forEach((off: number, k: number) => expect(off).toBeGreaterThan(s.ref_onset[k]));
+    // No correction at either end: the prior comes back.
+    out.shiftNone.ref_onset.forEach((t: number, k: number) => expect(t).toBeCloseTo(late[k + 1], 12));
+    expect(out.unknown).toBe(true);
+  });
+});
+
+test.describe('41. score lead-in — worker', () => {
+  test('41.24 the score lead-in: a quiet head no longer drags the first note into it, music at once stays at once, synth times stay unpadded, stamped; 0 = pinned; whole 0.2 s steps', async () => {
+    test.setTimeout(120_000);
+    const out = runLeadInScenario();
+    const truth: number[] = out.truth;
+    const err = (k: string, i: number) => out[k].ref_onset[i] - (truth[i] + out[k].lead);
+    // 2.5 s of noise before the music: pinned, the first note sits at the file's
+    // start; with the lead-in it finds the music (measured 2026-11-19: -2.5 s -> -28 ms).
+    expect(err('lead2.5_li0', 0)).toBeLessThan(-2.0);
+    expect(Math.abs(err('lead2.5_li3', 0))).toBeLessThan(0.06);
+    // Music at once: the lead-in does not push the first note into the music.
+    expect(Math.abs(err('lead0_li0', 0))).toBeLessThan(0.06);
+    expect(Math.abs(err('lead0_li3', 0))).toBeLessThan(0.06);
+    for (const k of ['lead0_li3', 'lead2.5_li3']) {
+      expectMonotonic(out[k].ref_onset);
+      for (let i = 0; i < N_NOTES; i++) expect(Math.abs(err(k, i)), `${k} event ${i}`).toBeLessThan(0.08);
+      // synth_onset is the score's own time, never shifted by the lead-in.
+      expect(out[k].synth_onset).toEqual(out['lead0_li0'].synth_onset);
+      expect(out[k].stamp.leadIn.sec).toBe(3);
+      expect(out[k].stamp.leadIn.entrySec).toBeGreaterThanOrEqual(0);
+      // Up to one coarse frame past the lead-in: the music began at once.
+      expect(out[k].stamp.leadIn.entrySec).toBeLessThanOrEqual(3.2);
+    }
+    expect(out['lead0_li0'].stamp.leadIn).toBeUndefined();
+    // No lead-in without the fine pass.
+    expect(out.coarseOnly.leadIn).toBeUndefined();
+    expect(out.coarseOnly.method).toBe('chroma-dtw');
+    // Unset / negative = the default 3 s, 0 = off, else whole 0.2 s steps.
+    expect(out.opts).toEqual({ None: 3, '-1': 3, '0': 0, '3': 3, '2.9': 2.8, '1.5': 1.6 });
   });
 });

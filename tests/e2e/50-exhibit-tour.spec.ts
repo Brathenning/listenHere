@@ -239,7 +239,7 @@ test.describe('50 — the tour', () => {
     const { order } = await boot(page, 'debug=1&tour=both&marker=glass');
     await armQuietTransport(page);
     await page.evaluate(() => (window as any)._exhibitTest.tour(0).start('listening'));
-    await expect(page.locator('.vp[data-viewport="0"] .tour-dot')).toHaveCount(5); // stripes, switch, marker, zoom, done
+    await expect(page.locator('.vp[data-viewport="0"] .tour-dot')).toHaveCount(6); // stripes, switch, marker, zoom, look, done
     await page.click('.vp[data-viewport="0"] .tour-next');
     await page.evaluate((f) => (window as any)._exhibitTest.turns.request(0, f), order[1]);
     await expect.poll(() => step(page, 0)).toBe('marker');
@@ -249,6 +249,30 @@ test.describe('50 — the tour', () => {
     await expect.poll(() => step(page, 0)).toBe('zoom');
     // Without a marker the step is not there at all.
     await boot(page, 'debug=1&tour=both');
+    await armQuietTransport(page);
+    await page.evaluate(() => (window as any)._exhibitTest.tour(0).start('listening'));
+    await expect(page.locator('.vp[data-viewport="0"] .tour-dot')).toHaveCount(5);
+    // THE LOOK SWITCH (?ribbon) has its own step after the zoom, and its text
+    // names the middle option only when the switch offers it.
+    // Stripes → (a real switch) → zoom → look.
+    const toLook = async () => {
+      await page.click('.vp[data-viewport="0"] .tour-next');
+      await page.evaluate((f) => (window as any)._exhibitTest.turns.request(0, f), order[1]);
+      await expect.poll(() => step(page, 0)).toBe('zoom');
+      await page.click('.vp[data-viewport="0"] .tour-next');
+    };
+    await toLook();
+    await expect.poll(() => step(page, 0)).toBe('look');
+    await expect(page.locator('.vp[data-viewport="0"] .tour-body')).toContainText('or the two together');
+    await boot(page, 'debug=1&tour=both&ribbonGhost=0');
+    await armQuietTransport(page);
+    await page.evaluate(() => (window as any)._exhibitTest.tour(0).start('listening'));
+    await expect(page.locator('.vp[data-viewport="0"] .tour-dot')).toHaveCount(5);
+    await toLook();
+    await expect.poll(() => step(page, 0)).toBe('look');
+    await expect(page.locator('.vp[data-viewport="0"] .tour-body')).not.toContainText('together');
+    // …and with no switch there is no step.
+    await boot(page, 'debug=1&tour=both&ribbon=off');
     await page.evaluate(() => (window as any)._exhibitTest.tour(0).start('listening'));
     await expect(page.locator('.vp[data-viewport="0"] .tour-dot')).toHaveCount(4);
   });
