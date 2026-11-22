@@ -14,6 +14,10 @@ Citation metadata is also available in [CITATION.cff](CITATION.cff).
 
 This tool is developed as part of the [Signature Sound Vienna (SSV)](https://iwk.mdw.ac.at/signature-sound-vienna) [FWF P 34664-G](https://doi.org/10.55776/P34664) and [Vienna's New Year's Concerts: Same procedure as every year?](https://iwk.mdw.ac.at/same-procedure) [FWF SCP 1556025](https://doi.org/10.55776/SCP1556025) projects, funded by the Austrian Science Fund.
 
+### How Listen Here! is developed
+
+Listen Here! was first developed by hand, as a prototype research tool in 'Signature Sound Vienna'. Its continued refinement, extension, and further development take place in 'Same procedure...?', using Anthropic's [Claude Code](https://claude.com/claude-code) as a development tool.
+
 > **🔒 Your audio is never uploaded.** Whether you load files from your computer or stream them from the web, all audio processing — including alignment, alignment correction, playback, and waveform rendering — happens entirely in your web browser. Audio is fetched directly into your browser and is never sent onward to Listen Here! or any other server. This is particularly important when working with copyrighted recordings.
 
 ## Getting Started
