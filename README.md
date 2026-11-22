@@ -201,14 +201,19 @@ Automatic alignment is good but not perfect. When the alignment includes a score
 The correction screen shows the score above a strip with the recording's waveform, with optional **spectrogram** and **onset** lanes beneath. Ticks on the strip mark where each score event currently falls. During playback, the left ear hears the recording and the right ear a synthesised rendering of the score, so you can hear where the two part ways.
 
 - **Drag a tick** to where the note really is. It becomes an **anchor**, and the alignment ahead of it is recomputed up to the next anchor or the **Reach** horizon. **Bend** sets how far the ticks behind follow it. With **Magnet on drag**, a dragged tick snaps to nearby detected onsets.
-- **`Left`/`Right`** step between onsets; **`Shift` + `Left`/`Right`** nudge the selected tick (add **`Alt`** for finer steps). **`Up`/`Down`** turn the score page.
-- **`Enter`** anchors the selected tick where it stands, or unanchors it; **`Backspace`/`Delete`** unanchors it.
+- **Refill** chooses how that recomputation works. **Shift** keeps the stored alignment and carries your correction into the notes around the anchor, fading over about a second. **Onsets** re-matches the span against the recording using chroma and note onsets. **Chroma** re-matches it using chroma alone, as in versions before 0.145.0. **Auto**, the default, takes shift for alignments made with the score fine pass (version 0.143.0 on) and onsets for older ones.
+- **`Left`/`Right`** step between onsets; **`Shift` + `Left`/`Right`** nudge the selected tick (add **`Alt`** for finer steps). **`Up`/`Down`** turn the score page, **`Home`/`End`** go to the first or last page, and the page number can be typed into.
+- **`Enter`** anchors the selected tick where it stands, or unanchors it; on several selected ticks it anchors every free one, or unanchors them all when all are anchored. **`Backspace`/`Delete`** unanchors.
 - **`S`** moves the selected ticks to the nearest detected onset; **`A`** selects all ticks on the page.
 - **`G`** marks the audio after the selected onset as **unscored** (applause, a pause, an unwritten repeat), so nothing is aligned across it.
 - **`R`** replays the last fix. With **Re-align automatically** turned off, fixes only pin their ticks and **`Shift` + `R`** re-aligns the spans that are waiting.
 - **`+`/`-`** zoom the score; **`Escape`** or the **×** returns to the listening view.
+- **Go to section…** jumps to a section of the score, starting playback just before its first note.
+- Under **Playback**, the audition plays the synthesised score beside the recording, or **Clicks**: a click on every tick where it stands now, with the recording in both ears.
+- Under **Snap to onsets**, the onset detector's **hop** and **smoothing** set how finely onsets are found for the onset lane and for snapping.
+- Time rulers along the strip's edges show the recording's seconds, following the zoom.
 
-Every correction can be undone and redone, and **Revert alignment edits** restores the original alignment. Corrections are saved in the alignment JSON with **Save data** and resumed when the file is loaded again. The listening view, the tempo curve, and annotation regions all follow the corrected alignment.
+Every correction can be undone and redone, and **Revert alignment edits** restores the original alignment. Corrections are saved in the alignment JSON with **Save data** (with the refill methods used, in `header.corrections.refill`) and resumed when the file is loaded again. The listening view, the tempo curve, and annotation regions all follow the corrected alignment.
 
 ---
 
@@ -239,9 +244,22 @@ The alignment wizard exposes several parameters that control how the DTW (Dynami
 | Coarse resolution  | 4        | 2        | 2            | How much to downsample audio for the initial structural pass. Lower values are more precise but slower.                                              |
 | Search flexibility | 80       | 120      | 160          | How far (in frames) the fine alignment can deviate from the structural estimate. Wider values are more forgiving of large tempo changes, but slower. |
 | Feature rate       | 10 Hz    | 10 Hz    | 20 Hz        | How many chroma analysis frames are computed per second of audio. Higher rates capture fast passages more accurately but increase processing time.   |
-| Score resolution   | 2 (half) | 1 (full) | 1 (full)     | Downsampling factor for score-to-performance alignment. Only applies when an MEI URI is provided. 1 = full resolution, slower but more accurate.     |
+| Score resolution   | 2 (half) | 2 (half) | 2 (half)     | Downsampling factor for the coarse score pass. Only applies when an MEI URI is provided. 1 = full resolution (10 Hz), slower; with the fine pass, 2 is as accurate. |
+| Score fine pass    | On       | On       | On           | Refines the score alignment around the coarse pass using note onsets (see below). Off = the coarse pass alone, as before version 0.143.0.           |
+| Score lead-in      | 3 s      | 3 s      | 3 s          | Lets the score's first note find where the music starts in the reference. Used with the fine pass. Off = the first note pinned to the start of the reference's usable span. |
 
 All settings are saved in your browser and restored the next time you open the wizard. The values used are always written into the output file (`header.alignmentParams`) for reproducibility.
+
+### How the score is aligned
+
+The score (the MEI, rendered to MIDI by [Verovio](https://www.verovio.org)) is synthesised and aligned to the reference recording in two passes:
+
+1. **A coarse pass** matches the chroma of the synthesised score and the recording at 5 frames per second, which captures the large-scale structure.
+2. **A fine pass** refines it at 25 frames per second within ±2 s of the coarse result, adding note-onset information to the chroma: decaying, locally normalised chroma onset features (DLNCO) after S. Ewert, M. Müller, and P. Grosche, "High Resolution Audio Synchronization Using Chroma Onset Features" (ICASSP 2009), with parameters from the [Sync Toolbox](https://github.com/meinhardmueller/synctoolbox) (M. Müller et al., JOSS 2021). Here the onsets come from a short-time Fourier transform rather than the Sync Toolbox's filterbank.
+
+The reference's usable span deliberately starts a little before the music, so that no music is cut off. To keep the first note out of that silence, the score is given a short silent **lead-in** within which its alignment may start.
+
+Measured against hand-placed note times (the Fledermaus overture, 2,115 notes) and 57 piano performances from the (n)ASAP dataset, the fine pass roughly halves the median note error (Fledermaus 52.5 → 29.3 ms, piano 53.2 → 23.4 ms), and the lead-in brings the first notes into place. Endings are less precise than the rest of a piece. Each alignment records how its score was aligned in `header.scoreAligner`.
 
 ---
 
