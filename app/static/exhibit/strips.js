@@ -61,6 +61,8 @@ const DEFAULT_COLORS = {
  * @param {number} opts.zoom        minPxPerSec; 0 fits the whole recording
  * @param {string} opts.label       language-neutral caption (conductor · year)
  * @param {(file: string, time: number) => void} opts.onSelect  tap handler
+ * @param {object[]} [opts.sections] the ribbon's blocks in this recording's seconds
+ * @param {Function} [opts.onNow]    see mountStrips
  * @returns {Strip}
  */
 export function createStrip(parent, opts) {
@@ -165,6 +167,11 @@ export function createStrip(parent, opts) {
     }, 5000);
   });
 
+  const ribbon = opts.sections?.length
+    ? buildRibbon(ws.getWrapper(), opts.sections, opts.duration, opts.onNow)
+    : null;
+  let isActive = false;
+
   // "Now playing" bars (?activeStrip=bars; alpha-tester feedback 2026-09-10): a
   // three-bar equaliser glyph after the caption, shown on the active strip only
   // and animated only while the clock runs (exhibit.css keys it off #screen
@@ -197,9 +204,13 @@ export function createStrip(parent, opts) {
       } catch (_) {
         /* a src-less media element declining a seek costs us nothing */
       }
+      // The ribbon names the theme playing now — on the audible strip only.
+      if (isActive) ribbon?.setNow(time);
     },
     /** Mark this strip as the one the shared clock is running on. */
     setActive(active) {
+      isActive = !!active;
+      if (!isActive) ribbon?.clearNow();
       el.classList.toggle("is-active", !!active);
       ws.setOptions({
         waveColor: active ? colors.waveActive : colors.wave,
@@ -228,6 +239,160 @@ export function createStrip(parent, opts) {
 }
 
 /**
+ * The section ribbon (?ribbon): the score's sections as blocks INSIDE the
+ * renderer's scrolling wrapper, the layer WaveSurfer's own regions plugin uses.
+ * That placement is the whole design: blocks are positioned in percent of the
+ * recording, so zoom, scroll, and resize carry them with no redraw, and the
+ * strip's box, its tap→time mapping, the glass, and the annotation regions
+ * see exactly the strip they always saw. Measured 2026-11-10: a layer here
+ * survives re-layout, and document CSS reaches it through `::part`, so
+ * exhibit.css owns the look — the band's height, its place ABOVE the region
+ * washes (the user, 2026-11-11: sharing the full height, the two could not be
+ * told apart), and hiding the waveform under `.vp[data-look="ribbon"]`. Only
+ * the blocks' horizontal geometry is inline.
+ *
+ * THEME NAMES without the mess (the user, 2026-11-17; measured: at museum
+ * width a theme block's median is 34 px, too narrow for any name on all ten
+ * strips). Two layers. A theme's SHORT name, shared by every section of a
+ * recurring theme ("Waltz 1", "Cancan"), sits in its block only where it fits
+ * — a container query per block hides it otherwise (exhibit.css) — so a
+ * reader sees the same name come back. And the audible strip names the theme
+ * playing NOW in full, one label pinned to that block's edge, moved only when
+ * the music crosses into the next theme (setNow).
+ *
+ * @param {HTMLElement} wrapper   ws.getWrapper()
+ * @param {object[]} sections     {id, level, label, short, start, end, color, odd}, seconds
+ * @param {number} duration
+ * @param {(now: {form: string|null, theme: string|null}) => void} [onNow]
+ *   told whenever the audible strip crosses into another form or theme
+ * @returns {{setNow: (t: number) => void, clearNow: () => void}}
+ */
+function buildRibbon(wrapper, sections, duration, onNow) {
+  const at = (s) => (100 * Math.max(0, Math.min(duration, s))) / duration;
+  const pct = (s) => `${at(s)}%`;
+  const span = (s) =>
+    `position:absolute;left:${pct(s.start)};width:calc(${pct(s.end)} - ${pct(s.start)})`;
+  // Two layers with the same geometry: the BLOCKS, which may lie under the
+  // annotation washes, and the NAMES, always above them like the cursor — a
+  // wash over a name would hide exactly what it is meant to explain.
+  const layer = document.createElement("div");
+  layer.setAttribute("part", "ribbon");
+  layer.style.cssText = "position:absolute;left:0;right:0;pointer-events:none";
+  const names = document.createElement("div");
+  names.setAttribute("part", "ribbon-names");
+  names.style.cssText = layer.style.cssText;
+  const themes = [];
+  const forms = [];
+  for (const s of sections) {
+    const block = document.createElement("div");
+    block.setAttribute("part", `section l${s.level}${s.odd ? " odd" : ""}`);
+    block.dataset.section = s.id;
+    block.style.cssText = span(s);
+    block.style.setProperty("--section-color", s.color);
+    layer.appendChild(block);
+    (s.level === 2 ? themes : forms).push({ ...s, block });
+    const text = s.level === 1 ? s.label : s.short;
+    if (!text) continue;
+    const box = document.createElement("div");
+    box.setAttribute("part", `name-box l${s.level}`);
+    box.style.cssText = span(s);
+    const name = document.createElement("span");
+    // A short name's width class picks the container query that hides it
+    // where its box is narrower than the name (exhibit.css).
+    const w = text.length <= 6 ? 1 : text.length <= 10 ? 2 : 3;
+    name.setAttribute("part", s.level === 1 ? "section-label" : `short w${w}`);
+    name.textContent = text;
+    box.appendChild(name);
+    names.appendChild(box);
+  }
+  const now = document.createElement("span");
+  now.setAttribute("part", "now-label");
+  names.appendChild(now);
+  wrapper.prepend(layer, names);
+
+  let current = null;
+  const show = (theme) => {
+    if (theme === current) return;
+    current?.block.part.remove("now");
+    current = theme;
+    if (!theme) {
+      now.part.remove("shown");
+      return;
+    }
+    theme.block.part.add("now");
+    now.textContent = theme.label;
+    // From the block's left edge, unless that would run off the strip's end:
+    // then from its right edge, leftwards.
+    const late = at(theme.start) > 62;
+    now.style.left = late ? "auto" : pct(theme.start);
+    now.style.right = late ? `${100 - at(theme.end)}%` : "auto";
+    now.part.add("shown");
+  };
+  // The form section playing now, for onNow: a form without themes of its
+  // own (some of Kaiser-Walzer's) still names where the music is.
+  let currentForm = null;
+  // Set while this strip is not the audible one: its first frame back must
+  // report even when nothing is playing there (before the first section),
+  // or the viewport would keep the previous strip's names.
+  let stale = true;
+  const within = (list, t) => list.find((x) => t >= x.start && t < x.end) || null;
+  return {
+    setNow(t) {
+      const inTheme = current && t >= current.start && t < current.end;
+      const inForm = currentForm && t >= currentForm.start && t < currentForm.end;
+      if (inTheme && inForm) return;
+      const theme = within(themes, t);
+      const form = within(forms, t);
+      if (theme === current && form === currentForm && !stale) return;
+      stale = false;
+      show(theme);
+      currentForm = form;
+      onNow?.({ form: form?.label ?? null, theme: theme?.label ?? null });
+    },
+    // No onNow here: the strip that becomes audible reports on its next frame.
+    clearNow: () => {
+      show(null);
+      currentForm = null;
+      stale = true;
+    },
+  };
+}
+
+/**
+ * One recording's sections in its OWN seconds, through its grid: a section's
+ * `indexPair` names reference-grid indices, and every recording's grid maps
+ * the same index to its own time. Only levels 1 (form) and 2 (themes) are
+ * drawn — level 0 is the whole piece. Colours follow the form section, so a
+ * theme reads as part of its form and the same section is the same colour on
+ * every strip; `odd` alternates siblings so adjacent themes stay apart.
+ */
+function sectionsFor(sections, grid, palette, textFor) {
+  if (!grid?.length || !palette?.length) return [];
+  const at = (i) => grid[Math.max(0, Math.min(grid.length - 1, i))];
+  const colorOf = new Map();
+  const siblings = new Map();
+  const out = [];
+  for (const s of sections) {
+    if (s.level !== 1 && s.level !== 2) continue;
+    if (s.level === 1) colorOf.set(s.id, palette[colorOf.size % palette.length]);
+    const n = siblings.get(s.parent) || 0;
+    siblings.set(s.parent, n + 1);
+    out.push({
+      id: s.id,
+      level: s.level,
+      // Labels are language maps (prep); the xml:id stands in for a missing one.
+      label: textFor(s.label) || s.id,
+      short: textFor(s.short) || null,
+      start: at(s.indexPair[0]),
+      end: at(s.indexPair[1]),
+      color: colorOf.get(s.level === 1 ? s.id : s.parent) || palette[0],
+      odd: n % 2 === 1,
+    });
+  }
+  return out;
+}
+
+/**
  * Build one viewport's full stack, in the payload's curated order.
  *
  * @param {HTMLElement} parent      the viewport's `.strips` container
@@ -235,12 +400,29 @@ export function createStrip(parent, opts) {
  * @param {object} config
  * @param {(file: string, time: number) => void} onSelect
  * @param {(file: string) => string} labelFor
+ * @param {string[]} [sectionColors]  the ribbon's palette; omitted, no ribbon is built
+ * @param {(value: object|string|null) => string} [textFor]  resolves a section
+ *   label's language map in this viewport's language
+ * @param {(now: {form: string|null, theme: string|null}) => void} [onNow]  told
+ *   the form and theme playing now, by the audible strip, on change
  * @returns {{strips: Map<string, Strip>, ready: Promise<void>}} the map is keyed by
  *   recording, so the cursor loop and the region sync can both address a strip by
  *   the name the payload uses. `ready` settles once every renderer knows its own
  *   duration — nothing that measures a strip may run before it (see createStrip).
  */
-export function mountStrips(parent, data, config, { onSelect, labelFor, colors }) {
+export function mountStrips(
+  parent,
+  data,
+  config,
+  {
+    onSelect,
+    labelFor,
+    colors,
+    sectionColors,
+    textFor = (v) => (typeof v === "string" ? v : ""),
+    onNow,
+  },
+) {
   const strips = new Map();
   const files = data.order.slice(0, config.stackedRecordings);
   for (const file of files) {
@@ -255,6 +437,9 @@ export function mountStrips(parent, data, config, { onSelect, labelFor, colors }
         label: labelFor(file),
         onSelect,
         colors,
+        sections:
+          sectionColors && sectionsFor(data.sections, data.grids[file], sectionColors, textFor),
+        onNow,
       }),
     );
   }

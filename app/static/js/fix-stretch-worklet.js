@@ -29,15 +29,19 @@
  * get zero gain, and the Hann overlap turns that into a ~23 ms fade. A new
  * grid takes effect at the next grain.
  *
+ * CLICKS (any mode): with `ear {held: true}` channel 1 plays the held copy
+ * even while a warp is set — the client has patched a click track into it —
+ * and the warp resumes, unchanged, on `ear {held: false}`.
+ *
  * Messages in:  load {ch0, ch1, srcRate}, patch {ch, offset, data},
  *               play, pause, seek {pos seconds}, rate {value},
  *               probe {t0, t1, tag},
  *               warp {ref, rg, tg, gain} | warp {ref: null} (off),
- *               warpGrid {rg, tg, sentAt?}.
+ *               warpGrid {rg, tg, sentAt?}, ear {held}.
  * Messages out: pos {pos seconds, refPos?, warpGain?} (~12/s while playing),
  *               warpAck {deliverMs, waitMs} (a new grid's first grain), ended,
  *               probe {tag, t0, t1, len, ch0: {peak, rms}, ch1: {peak, rms}}.
- * processorOptions may carry {ch0, ch1, srcRate, warp, playing} to start
+ * processorOptions may carry {ch0, ch1, srcRate, warp, held, playing} to start
  * loaded — what an OfflineAudioContext test needs, since port messages
  * posted before rendering are not guaranteed to arrive first.
  *
@@ -71,6 +75,7 @@ class FixStretchProcessor extends AudioWorkletProcessor {
     this.gA = null; // older grain {S: source start, O: output start}
     this.gB = null; // younger grain
     this.warp = null; // {ref, rg, tg, gain}: channel 1 is the warped reference
+    this.held1 = false; // channel 1 from the held copy even under a warp (clicks)
     this.wA = null; // channel 1's grains then: {S: reference start, O, g: gain}
     this.wB = null;
     this.sincePost = 0;
@@ -83,6 +88,7 @@ class FixStretchProcessor extends AudioWorkletProcessor {
     if (o && o.ch0) {
       this._onMsg({ type: "load", ch0: o.ch0, ch1: o.ch1, srcRate: o.srcRate });
       if (o.warp) this._onMsg({ type: "warp", ...o.warp });
+      this.held1 = !!o.held;
       this.playing = !!o.playing;
     }
   }
@@ -107,6 +113,8 @@ class FixStretchProcessor extends AudioWorkletProcessor {
           atN: this.n,
         };
       }
+    } else if (m.type === "ear") {
+      this.held1 = !!m.held;
     } else if (m.type === "patch") {
       if (this.ch) this.ch[m.ch].set(m.data, m.offset);
     } else if (m.type === "play") {
@@ -269,13 +277,14 @@ class FixStretchProcessor extends AudioWorkletProcessor {
     const c0 = this.ch[0];
     const c1 = this.ch[1];
     const w = this.warp;
+    const warped = w && !this.held1;
     const len = c0.length;
     const L = out[0].length;
     for (let k = 0; k < L; k++) {
       if (this.n >= this.gB.O + HOP) this._spawn();
       out[0][k] =
         this._grainSample(this.gA, c0) + this._grainSample(this.gB, c0);
-      out[1][k] = w
+      out[1][k] = warped
         ? w.gain *
           (this.wA.g * this._grainSample(this.wA, w.ref) +
             this.wB.g * this._grainSample(this.wB, w.ref))
