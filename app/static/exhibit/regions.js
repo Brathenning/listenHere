@@ -31,6 +31,10 @@
  */
 export const EX_REGION_PREFIX = "ex_";
 
+// The wash strengths, resting and emphasised. A theme may carry its own
+// (themes.js washAlphas): over a dark coloured ground these let the ground win
+// — gold over cobalt reads olive — so such a theme washes stronger, under the
+// waveform rather than over it (exhibit.css, the wash layer tokens).
 const ALPHA = 0.34;
 const ALPHA_ACTIVE = 0.5;
 
@@ -62,9 +66,11 @@ export const MAX_WIDEN_FRACTION = 0.02;
  * @param {number} [opts.minRegionPx]      widen anything narrower than this
  * @param {string[]} [opts.activeIds]      annotations to emphasise — plural,
  *   because the wash paints the UNION at overlaps (ruled 2026-08-25)
+ * @param {{alpha: number, alphaActive: number}} [opts.alphas]  the theme's
+ *   wash strengths; omitted, the shipped 0.34 / 0.5
  */
-export function syncRegions(strips, annotations, { minRegionPx = 0, activeIds = [] } = {}) {
-  const specsByFile = computeSpecsByFile(annotations, activeIds);
+export function syncRegions(strips, annotations, { minRegionPx = 0, activeIds = [], alphas } = {}) {
+  const specsByFile = computeSpecsByFile(annotations, activeIds, alphas);
   for (const [file, strip] of strips) {
     const minSeconds = Math.min(
       minRegionPx * _secondsPerPx(strip),
@@ -83,7 +89,11 @@ export function syncRegions(strips, annotations, { minRegionPx = 0, activeIds = 
  * and `regionTimes` was already re-derived through the canonical index pairs, so a
  * target that is not in this exhibit simply is not here to skip.
  */
-export function computeSpecsByFile(annotations, activeIds = []) {
+export function computeSpecsByFile(
+  annotations,
+  activeIds = [],
+  { alpha = ALPHA, alphaActive = ALPHA_ACTIVE } = {},
+) {
   const byFile = {};
   for (const ann of annotations) {
     const isActive = activeIds.includes(ann.id);
@@ -104,7 +114,7 @@ export function computeSpecsByFile(annotations, activeIds = []) {
           regionId: region.id,
           start: t.start,
           end: t.end,
-          color: _withAlpha(ann.color, isActive ? ALPHA_ACTIVE : ALPHA),
+          color: _withAlpha(ann.color, isActive ? alphaActive : alpha),
           provisional: handPlaced.has(region.id),
         });
       }

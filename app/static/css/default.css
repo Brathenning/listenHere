@@ -7604,10 +7604,17 @@ body.lh-v6-drawer-open .drawer-btns {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.fix-chooser-count {
+.fix-chooser-count,
+.fix-chooser-total {
   flex: 0 0 auto;
   font-size: 0.85em;
   color: var(--color-text-secondary, var(--color-text-muted, #666));
+}
+.fix-chooser-total {
+  margin-right: -0.3em; /* "N markers · m anchors" reads as one phrase */
+}
+.fix-chooser-total[hidden] {
+  display: none;
 }
 .fix-chooser-go {
   flex: 0 0 auto;
@@ -7683,9 +7690,10 @@ body.fix-mode-open #region-waveforms {
   flex: 1 1 0;
   min-width: 0;
 }
-/* The re-alignment reach and the bend: a label and its select sharing one row. */
+/* The re-alignment reach, the bend, and the refill: a label and its select sharing one row. */
 .fix-horizon-row select,
-.fix-bend-row select {
+.fix-bend-row select,
+.fix-refill-row select {
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -7774,6 +7782,29 @@ body.fix-mode-open .icon-fix-mode {
 /* Markers are a listening-mode tool; the correction screen has none. */
 body.fix-mode-open #mark {
   display: none;
+}
+/* First / last page: correction mode only, outermost in the row and spaced
+   like the other buttons. */
+#transport .fix-only {
+  display: none;
+}
+body.fix-mode-open #transport .fix-only {
+  display: flex;
+}
+/* The page field: three digits snugly, no spinner (Up / Down step it). */
+.fix-page-input {
+  box-sizing: content-box;
+  width: calc(3ch + 2px);
+  padding: 0 1px;
+  font: inherit;
+  text-align: right;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.fix-page-input::-webkit-inner-spin-button,
+.fix-page-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 .fix-chip {
   align-self: flex-start;
@@ -7886,9 +7917,30 @@ body.fix-mode-open #mark {
    when a lane joins. */
 .fix-lanes {
   position: absolute;
-  inset: 0 0 var(--fix-strip-gutter, 12px) 0;
+  inset: var(--fix-ruler-h, 14px) 0
+    calc(var(--fix-strip-gutter, 12px) + var(--fix-ruler-h, 14px)) 0;
   display: flex;
   flex-direction: column;
+}
+/* The time axis (0.133.0): a ruler band along the strip's top and bottom
+   edges, the playhead's arrowheads between them; score-less, one along the
+   reference pane's top. The bands come out of each pane's OWN height, like
+   the gutter, so the score pane (and the prewarm fit) never move. JS reads
+   the band back off the lane stack's offset; this is its only definition. */
+.fix-strip,
+.fix-ref {
+  --fix-ruler-h: 14px;
+}
+.fix-rulers,
+.fix-ref-ruler {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.fix-pane-tab {
+  margin-top: var(--fix-ruler-h, 0px);
 }
 .fix-strip-ws {
   position: relative;
@@ -7943,7 +7995,7 @@ body.fix-mode-open #mark {
 }
 .fix-ref-lanes {
   position: absolute;
-  inset: 0 0 12px 0;
+  inset: var(--fix-ruler-h, 14px) 0 12px 0;
   display: flex;
   flex-direction: column;
 }
@@ -8114,6 +8166,28 @@ body.fix-mode-open #mark {
 .fix-spec-cfg[hidden] {
   display: none;
 }
+/* The onset detector's hop and smoothing: one row, each select after its word. */
+.fix-onset-cfg {
+  display: flex;
+  align-items: center;
+  column-gap: 0.6em;
+  row-gap: 0.15em;
+  margin: 0.15em 0 0.1em 1em;
+  font-size: var(--font-size-small, 0.85em);
+}
+.fix-onset-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
+  white-space: nowrap;
+}
+.fix-onset-cfg label {
+  color: var(--color-text-secondary, #64748b);
+}
+.fix-onset-cfg select {
+  flex: 0 0 auto;
+  font-size: inherit;
+}
 /* Score-less: the Lanes box's two groups, the recording's and the reference's. */
 .fix-nav-subhead {
   margin: 0.3em 0 0.05em;
@@ -8219,6 +8293,10 @@ body.fix-mode-open #mark {
   margin-right: 0.45em;
   cursor: pointer;
 }
+/* Synth / Clicks: the same radios, flush left over the slider they set. */
+.fix-ear-row {
+  margin-left: 0;
+}
 /* The "move to nearest onset" icon at the end of the Snap row. */
 .fix-icon-btn {
   margin-left: auto;
@@ -8238,12 +8316,34 @@ body.fix-mode-open #mark {
 .fix-page-ctl {
   display: flex;
   align-items: center;
-  gap: 0.4em;
+  gap: 0.3em;
 }
+/* Slim side padding: "Fill width" must fit in Firefox beside the page field. */
 #fix-score-zoom {
   font-size: var(--font-size-small, 0.8em);
   min-width: 0;
   flex: 1;
+  padding-left: 2px;
+  padding-right: 2px;
+}
+/* "Go to section…" on its own row under the page readout, as wide as it. */
+#fix-section {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 0.3em;
+  font-size: var(--font-size-small, 0.8em);
+}
+/* Playback crossed into another section: a soft glow in the selection's
+   colour that fades back to the menu's own look. */
+#fix-section.fix-section-cue {
+  animation: fix-section-cue 1.5s ease-out;
+}
+@keyframes fix-section-cue {
+  from {
+    background-color: color-mix(in srgb, var(--color-alignment-selected, #ffa500) 30%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-alignment-selected, #ffa500) 55%, transparent);
+  }
 }
 .fix-strip-ws[data-placeholder]::after {
   content: attr(data-placeholder);

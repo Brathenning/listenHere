@@ -21,9 +21,10 @@ WHAT THIS ENCODES, and why — every one of these is a decision recorded in
 docs/exhibit-prototype-plan.md, not a preference:
 
 * **Times are RE-DERIVED from the HQ grid through canonical index PAIRS, never
-  copied.** Alignment indices are portable across re-alignments and times are not:
-  every grid is 29,121 entries whatever the preset, because the length is
-  score-determined (§5.2c). Only ONE time per region was ever authored — the rest
+  copied.** Alignment indices are portable across re-alignments ON ONE REFERENCE
+  and times are not: every grid is as long as the reference's frames (29,121 on
+  VPO-2010 until 2026-11-10; 26,844 on VPO-2022 since), whatever the preset
+  (§5.2c). A new reference needs `exhibit_annots_on_hq.py --reanchor`. Only ONE time per region was ever authored — the rest
   were mirrored through the grid — so re-deriving *improves* 15–18 times per
   region rather than damaging hand-work.
 * **Hand corrections travel INSIDE the HQ alignment, never beside it.** Fix mode
@@ -74,8 +75,8 @@ docs/exhibit-prototype-plan.md, not a preference:
 * **A second piece is a table entry, not a fork of this script** (PIECES below,
   `--piece`): its alignment source, curated recordings, canonical pairs, wav
   directory, title, and opus. Kaiserwalzer (op. 437, the attract loop's next
-  piece, plan §4.4 R6) is the first — PROVISIONAL, from a fast-preset alignment
-  with no annotation sets, and its payload says so in `warnings`.
+  piece, plan §4.4 R6) is the first: Chanda's sets on her balanced-preset body,
+  its score borrowed from the fast run on the same reference grid (PIECES).
 
 Usage:
     tools/prep_exhibit_data.py                     # everything, Die Fledermaus
@@ -101,8 +102,23 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PIECE = "fledermaus"
 SCHEMA = "lh-exhibit-payload/1"
 
+# The spine since 2026-11-10: the corrected score alignment re-based onto Eulenburg
+# 2f44c21 (the sectioned MEI), reference VPO-2022, with the audio-to-audio grids of
+# the eleven recordings it lacked spliced in from Fledermaus-all-fixed.json (same
+# reference, identical reference grid; see its header.additions[].splicedFrom). A
+# new reference makes every old index meaningless, so the audience sources are
+# Chanda's sets RE-ANCHORED onto it (tools/exhibit_annots_on_hq.py --reanchor
+# --out-dir ExhibitAnnots/on-hq-2026-11-10), as for the Pizzicato-Polka; AUTHORED
+# names her originals, which that tool reads. Its own name, not a replacement of
+# Alignment_Fledermaus_HQ.json: ExhibitAnnots/ is shared with checkouts whose
+# pairs table still describes the September spine (VPO-2010, 29,121 frames).
 SOURCES = {
-    "hq": "Alignment_Fledermaus_HQ.json",
+    "hq": "Alignment_Fledermaus_HQ.2026-11-10.json",
+    "kids": "on-hq-2026-11-10/Fledermaus_Kids_on_HQ.json",
+    "adults": "on-hq-2026-11-10/Fledermaus_Adults_on_HQ.json",
+    "expert": "on-hq-2026-11-10/Fledermaus_Expert_on_HQ.json",
+}
+AUTHORED = {
     "kids": "Alignment_Fledermaus_Kids.json",
     "adults": "Alignment_Fledermaus_Adults.json",
     "expert": "Alignment_Fledermaus_Expert.json",
@@ -122,7 +138,7 @@ AUDIENCES = ["kids", "adults", "expert"]
 #                  (Q3): 239 characters that had nowhere to appear.
 # TEN IS A CAP, NOT A TARGET. Adding an eleventh needs the author, not this file.
 CURATED = [
-    "VPO-2010.wav",  # the reference, and the slowest
+    "VPO-2010.wav",  # the slowest; the reference until 2026-11-10 (now VPO-2022), kept first so the wall's order holds
     "VPO-1951-1954.wav",
     "VPO-1987.wav",  # NB: the plain file is the 48 kHz one; both alternate 1987 releases are 44.1
     "VPO-1989.wav",
@@ -135,19 +151,27 @@ CURATED = [
 ]
 
 # plan §5.2c — the durable artifact of the re-alignment analysis. Asserted below.
+# On the VPO-2022 grid (26,844 frames), voted by --reanchor 2026-11-10 from the
+# authored seconds; the vote and every residual are in
+# ExhibitAnnots/on-hq-2026-11-10/annots-on-hq-report.md. FLAG = some target lands
+# more than 0.5 s from its authored time: an ear check, not yet a correction.
+# The September table (VPO-2010 grid, 29,121 frames) is in git history.
 CANONICAL_PAIRS = {
-    "rgn_ms4sh8ta_2": (2755, 3450),   # Adults, "Die Glocke"
-    "rgn_ms4su3uj_4": (5266, 7805),   # Adults, Keeping time
-    "rgn_msu6vl9p_2": (8835, 9794),   # Adults, The Viennese Lilt
-    "rgn_msvors30_2": (705, 711),     # Expert, D or E? (a) — NEEDS HAND-PLACEMENT (§5.2d)
-    "rgn_msvos2fy_3": (432, 894),     # Expert, D or E? (b)
-    "rgn_msvpcupp_5": (12772, 13933),  # Expert, Oboe Solos (a)
-    "rgn_msvpd6fv_6": (14990, 15582),  # Expert, Oboe Solos (b)
-    "rgn_msvqekba_8": (8564, 9414),   # Expert, Agogic and "Schwung"
-    "rgn_mrxebibu_3": (26315, 29120),  # Kids, Clapping Detective
-    "rgn_mrxej01r_5": (2843, 2866),   # Kids, Lonely Bell (a)
-    "rgn_mrxeqqiz_6": (2755, 3420),   # Kids, Lonely Bell (b)
-    "rgn_ms4gs23a_2": (25280, 26589),  # Kids, Rollercoaster Ending
+    "rgn_ms4sh8ta_2": (3068, 3717),    # Adults, "Die Glocke" — FLAG 0.65 s
+    "rgn_ms4su3uj_4": (5425, 7771),    # Adults, Keeping time
+    "rgn_msu6vl9p_2": (8734, 9673),    # Adults, The Viennese Lilt
+    "rgn_msvors30_2": (990, 1005),     # Expert, D or E? (a) — NEEDS HAND-PLACEMENT (§5.2d)
+    "rgn_msvos2fy_3": (747, 1175),     # Expert, D or E? (b) — FLAG 1.05 s
+    "rgn_msvpcupp_5": (12468, 13663),  # Expert, Oboe Solos (a) — FLAG 1.28 s
+    "rgn_msvpd6fv_6": (14622, 15235),  # Expert, Oboe Solos (b)
+    "rgn_msvqekba_8": (8481, 9296),    # Expert, Agogic and "Schwung"
+    # Its one target, VPO-1989, claps from 7:46.8 to 8:44.4: past the music, so
+    # past the end of the VPO-2022 grid, whose last frame reaches only 7:51.5 of
+    # it. No pair can say this; it needs a hand-placed override.
+    "rgn_mrxebibu_3": (25366, 26843),  # Kids, Clapping Detective — FLAG 52.85 s
+    "rgn_mrxej01r_5": (3133, 3181),    # Kids, Lonely Bell (a) — FLAG 0.66 s
+    "rgn_mrxeqqiz_6": (3068, 3691),    # Kids, Lonely Bell (b)
+    "rgn_ms4gs23a_2": (24265, 25797),  # Kids, Rollercoaster Ending — FLAG 0.81 s
 }
 
 # Zero-length regions: a re-derive cannot repair one, and drawing it would put an
@@ -187,22 +211,26 @@ ALIGNMENT_IS_HQ = True
 # from this table by rebinding those globals (apply_piece) — a script-sized
 # answer, chosen over threading a piece object through a dozen functions.
 #
-# Kaiserwalzer is PROVISIONAL in every respect and its payload says so:
-#   * the spine is `alignment-fast.json` (Listen Here! v0.18.0, the FAST preset:
-#     coarse 4, slack 80) — the only Kaiserwalzer alignment in the tree. The
-#     §5.2c lesson stands: the HQ re-alignment comes BEFORE any annotation is
-#     authored against it, and the payload carries an `alignment-not-hq` warning
-#     until then. Cursors and aligned switches may sit seconds off in places.
-#   * no audience sets exist, so no annotations, no canonical pairs, and no
-#     overrides file — the attract loop plays the piece through without a switch.
-#   * the ten recordings are a PROPOSAL, not the author's curation: the
-#     alignment's reference and the six other VPO concert years the corpus
-#     holds, then three non-VPO recordings with a named conductor and year —
-#     Karajan's 1984 Berlin recording, Bernstein's 1982 New York one, and
-#     Kendlinger 2010, which the Fledermaus set also has. Left out: the
-#     compilations, the two synthetic references, the year-range VPO discs,
-#     Böhm 1939 (a 4:36 cut), Furtwängler 1950, and the second Karajan. The
-#     author decides; ten is the cap.
+# Kaiserwalzer (annotated 2026-11-10):
+#   * the spine is the body Chanda authored her three sets on (they share it):
+#     Listen Here! v0.109.0, 2026-11-03, reference VPO-2021, the BALANCED preset
+#     (coarse 2, slack 120), open ends, 28 recordings, audio-to-audio only. Every
+#     region is a clean projection on it (all targets agree on one pair), so the
+#     pairs are hers, with no re-anchoring. Ruled by the user 2026-11-10 over an
+#     HQ run first: an HQ run can still come, through --reanchor. The payload
+#     keeps its `alignment-not-hq` warning until then.
+#   * the score (sections, the score view, the MEI) is BORROWED from
+#     `alignment-fast.json` (v0.18.0, fast preset), SOURCES["score"]: both have
+#     VPO-2021 as reference and an identical reference grid (40,671 frames), and
+#     score_set() asserts that, since sections are index pairs on that grid.
+#   * the ten are Chanda's OPTION A (2026-11-10): her nine questions target 22
+#     recordings, and the two curation rules (answers shown; recordings a text
+#     points to shown) needed 13, over the cap of ten. She kept all nine
+#     questions and dropped Aebi 1996, Falk, and VPO-2008, rewording the three
+#     texts that counted them ("six versions", "these three", "the four most
+#     recent") through the overrides file's `texts` (apply_texts), with her
+#     typo fixes. "Das Grosse Neujahrskonzert" IS Rieu's 2012 recording (the
+#     user, same day), not the separate ext-…Rieu file.
 #   * audio goes to `audio/kaiserwalzer/`: two file names are shared with the
 #     Fledermaus corpus (VPO-1987, Kendlinger 2010) and would collide in `audio/`.
 #   * metadata.json (conductor, year, portrait) knows only the Fledermaus set,
@@ -211,22 +239,40 @@ ALIGNMENT_IS_HQ = True
 PIECES = {
     "fledermaus": None,  # the module defaults above
     "kaiserwalzer": {
-        "src_dir": os.path.join(REPO, "app/static/wav/Kaiserwalzer"),
-        "sources": {"hq": "alignment-fast.json"},
-        "audiences": [],
+        "src_dir": os.path.join(REPO, "ExhibitAnnots"),
+        "sources": {
+            "hq": "Kaiserwalzer_Alignment_Experts.json",  # her body; the three share it
+            "score": os.path.join(REPO, "app/static/wav/Kaiserwalzer/alignment-fast.json"),
+            "kids": "Kaiserwalzer_alignment_kids.json",
+            "adults": "Kaiserwalzer_Alignment-Adults.json",
+            "expert": "Kaiserwalzer_Alignment_Experts.json",
+        },
+        "audiences": ["kids", "adults", "expert"],
         "curated": [
             "VPO-2021.wav",  # the alignment's reference, and the slowest (13:33)
             "VPO-1987.wav",
-            "VPO-1991.wav",
-            "VPO-1996.wav",
             "VPO-2003.wav",
-            "VPO-2008.wav",
             "VPO-2016.wav",
-            "1984_Berliner Philharmoniker, Karajan (Kaiser–Walzer).wav",
-            "New York Philharmonic, Leonard Bernstein (1982).wav",
+            "Wiener Philharmoniker (10 CDs_4-6).wav",  # Karajan 1946
+            "SächsischeStaatskapelleDresden_KarlBöhm_1939.wav",
+            "Das Grosse Neujahrskonzert, mixed.wav",  # Rieu 2012
             "K&K Philharmoniker, Kendlinger (2010).wav",
+            "New York Philharmonic, Leonard Bernstein (1982).wav",
+            "1984_Berliner Philharmoniker, Karajan (Kaiser–Walzer).wav",
         ],
-        "pairs": {},
+        # On the VPO-2021 grid (40,671 frames), derived 2026-11-10 by
+        # exhibit_annots_on_hq.py --derive-pairs from each set: every target agrees.
+        "pairs": {
+            "rgn_mw0s20mp_15": (669, 2285),     # Kids, How quick is the tip-toeing king?
+            "rgn_mw0spfnj_18": (9652, 12146),   # Kids, Who brought the bells (and the piano)?
+            "rgn_mw0t0kmz_20": (24114, 24872),  # Kids, Taking an extra "breath"
+            "rgn_mw0qanf1_8": (1149, 3689),     # Adults, The same conductor, same orchestra, 41 years apart
+            "rgn_mw0qs8wm_10": (9212, 11230),   # Adults, Who tunes higher?
+            "rgn_mw0r99p9_13": (31228, 39447),  # Adults, The dancer's shortcut
+            "rgn_mw0k63z2_2": (18712, 20112),   # Expert, Prussian boots or Viennese Schwung?
+            "rgn_mw0l9ywl_4": (5921, 7270),     # Expert, The lengthening (?) cello solo
+            "rgn_mw0m1btd_6": (12054, 16395),   # Expert, Which recordings take the second waltz's repeat?
+        },
         "needs_hand_placement": set(),
         "wav_dir": "app/static/wav/Kaiserwalzer",
         "audio_subdir": "kaiserwalzer",
@@ -323,7 +369,7 @@ PIECES = {
 
 def apply_piece(name):
     """Rebind the module's piece constants to PIECES[name]; the default stays put."""
-    global PIECE, SOURCES, AUDIENCES, CURATED, CANONICAL_PAIRS, NEEDS_HAND_PLACEMENT
+    global PIECE, SOURCES, AUTHORED, AUDIENCES, CURATED, CANONICAL_PAIRS, NEEDS_HAND_PLACEMENT
     global WAV_DIR, AUDIO_SUBDIR, PIECE_TITLE, PIECE_COMPOSER, PIECE_OPUS
     global DEFAULT_SRC_DIR, ALIGNMENT_IS_HQ, DEGENERATE_REGIONS, OVERRIDES_FILE
     spec = PIECES[name]
@@ -334,6 +380,7 @@ def apply_piece(name):
     # across pieces, so sharing it would only produce "unknown annotation" noise.
     OVERRIDES_FILE = f"{name}-overrides.json"
     SOURCES = dict(spec["sources"])
+    AUTHORED = dict(spec.get("authored", {}))
     AUDIENCES = list(spec["audiences"])
     CURATED = list(spec["curated"])
     CANONICAL_PAIRS = dict(spec["pairs"])
@@ -474,6 +521,25 @@ def load_sources(src_dir):
         with open(path, encoding="utf-8") as fh:
             out[key] = json.load(fh)
     return out
+
+
+def score_set(sets):
+    """The set whose body.score and header.meiUri the payload uses.
+
+    The spine's, unless the piece borrows them (SOURCES["score"]) from another
+    alignment, which must then share the spine's reference AND its reference grid
+    exactly: sections are index pairs on that grid, and score_onset/ref_onset are
+    reference seconds. A mismatch fails the build, as verify_pairs does.
+    """
+    if "score" not in sets:
+        return sets["hq"]
+    hq, sc = sets["hq"], sets["score"]
+    ref = hq["header"]["ref"]
+    if (sc["header"].get("ref") != ref
+            or (sc["body"]["audio"].get(ref) or {}).get("times") != hq["body"]["audio"][ref]["times"]):
+        sys.exit(f"{SOURCES['score']} is not on the spine's reference grid ({ref}); "
+                 f"its score cannot be borrowed")
+    return sc
 
 
 def verify_pairs(sets, warnings):
@@ -702,8 +768,8 @@ def apply_overrides(annotations, overrides, warnings, corrections=None):
     corrected = (corrections or {}).get("audio") or {}
     index = {a["id"]: a for a in annotations}
     for ann_id, regions in (overrides or {}).items():
-        if ann_id.startswith("_"):
-            continue  # a note key, not data
+        if ann_id.startswith("_") or ann_id in ("reveal", "sectionLabels", "sectionShort", "texts"):
+            continue  # a note key, the reveal list, section labels, or text fixes — not times
         ann = index.get(ann_id)
         if ann is None:
             warnings.add("override-unknown-annotation", f"overrides name {ann_id}, which is absent")
@@ -734,6 +800,81 @@ def apply_overrides(annotations, overrides, warnings, corrections=None):
     else:
         log("  no overrides applied (none authored yet)")
     return applied
+
+
+def apply_reveal(annotations, overrides, warnings):
+    """Flag the annotations whose per-recording notes ANSWER the annotation's
+    question ("Which recording has just the bell?" — "Here you hear the flutes
+    as well"), so the exhibit can cover them until the reader asks (?reveal).
+    An editorial list in the overrides file (`"reveal": [annotationId, ...]`),
+    not the authoring tool's: the user, 2026-10-20 — a simple flag for now."""
+    ids = (overrides or {}).get("reveal") or []
+    index = {a["id"]: a for a in annotations}
+    for ann_id in ids:
+        ann = index.get(ann_id)
+        if ann is None:
+            warnings.add("reveal-unknown-annotation", f"reveal names {ann_id}, which is absent")
+            continue
+        ann["reveal"] = True
+    if ids:
+        log(f"  reveal: {sum(1 for a in annotations if a.get('reveal'))} annotation(s) answer behind a card")
+
+
+def apply_texts(annotations, overrides, warnings, sets):
+    """Editorial text fixes on top of the author's sets, so they survive a re-export
+    (her sets are gitignored; a hand edit there is lost). The overrides file's
+    `"texts"` key: { annotationId: { "label": [[find, replace], ...],
+    "description": [...], "targets": { "recording.wav": [...] } } }, each a plain
+    substring replace on the English text, in order. A find that no longer
+    matches WARNS rather than fails: the author has fixed her own text, and the
+    override can retire. A target outside the curated set is noted, not warned."""
+    texts = (overrides or {}).get("texts") or {}
+    if not texts:
+        return
+    index = {a["id"]: a for a in annotations}
+    authored = {}
+    for audience in AUDIENCES:
+        for ann in sets[audience].get("annotations", []):
+            authored[ann["id"]] = {t["file"] for t in ann.get("targets", [])}
+    applied, unshown = 0, []
+
+    def replace(where, field, fixes):
+        nonlocal applied
+        text = (field or {}).get("en")
+        for find, repl in fixes:
+            if text is None or find not in text:
+                warnings.add("text-override-unmatched",
+                             f"{where}: {find!r} is not in the text; fixed at source? "
+                             f"Retire the override")
+                continue
+            text = text.replace(find, repl)
+            applied += 1
+        if text is not None:
+            field["en"] = text.strip()
+
+    for ann_id, spec in texts.items():
+        if ann_id.startswith("_"):
+            continue
+        ann = index.get(ann_id)
+        if ann is None:
+            warnings.add("text-override-unknown-annotation", f"texts name {ann_id}, which is absent")
+            continue
+        for key in ("label", "description"):
+            if spec.get(key):
+                replace(f"{ann_id} {key}", ann[key], spec[key])
+        by_file = {t["file"]: t for t in ann["targets"]}
+        for filename, fixes in (spec.get("targets") or {}).items():
+            tgt = by_file.get(filename)
+            if tgt is not None:
+                replace(f"{ann_id} → {filename}", tgt["description"], fixes)
+            elif filename in authored.get(ann_id, ()):
+                unshown.append(f"{ann_id} → {filename}")
+            else:
+                warnings.add("text-override-unknown-target",
+                             f"texts name {ann_id} → {filename}, which is not authored")
+    log(f"  texts: {applied} fix(es) applied"
+        + (f"; {len(unshown)} on targets outside the curated set, skipped: "
+           f"{', '.join(unshown)}" if unshown else ""))
 
 
 def pending_hand_placement(annotations, warnings):
@@ -824,6 +965,135 @@ def describe_corrections(summary):
     return text
 
 
+# ------------------------------------------------------------------------ sections
+# The MEI's <section> tree, placed on the HQ grid (roadmap 28: the section
+# ribbon). Two halves, joined by measure xml:id:
+#   * the TREE comes from the pinned MEI, read here — ids, nesting, bar numbers,
+#     and a label from the overrides file's `sectionLabels` or the MEI's @label;
+#   * the TIMES come from tools/mei_measure_times.mjs — Verovio's measure
+#     quarters mapped to reference seconds by engine/time-map.js — because this
+#     script has no Verovio and a second copy of that chain is how two consumers
+#     start disagreeing about when a bar begins. The tool also REFUSES an MEI
+#     whose onset quarters differ from the alignment's score, which is the
+#     guard against a pinned MEI that drifted from the alignment.
+# Each section becomes an index PAIR on the reference grid, like a region: the
+# exhibit reads recordings[file].times[ix], so every recording's section times
+# come from the same grids as everything else on the wall. A section ends where
+# the next measure in document order starts; the last one at the alignment's
+# latest note-off.
+MEI_NS = "{http://www.music-encoding.org/ns/mei}"
+XML_ID = "{http://www.w3.org/XML/1998/namespace}id"
+
+
+def read_section_tree(mei_path):
+    """[(section element, depth, parent id)] in document order, plus every
+    measure id in document order. Endings count as sections (a volta is a span
+    a reader may want to see), with their own nesting."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.parse(mei_path).getroot()
+    body = next(root.iter(MEI_NS + "body"), None)
+    if body is None:
+        return [], []
+    found = []
+
+    def walk(el, depth, parent):
+        for child in el:
+            tag = child.tag if isinstance(child.tag, str) else ""
+            if tag in (MEI_NS + "section", MEI_NS + "ending"):
+                found.append((child, depth, parent))
+                walk(child, depth + 1, child.get(XML_ID))
+            elif tag != MEI_NS + "measure":
+                walk(child, depth, parent)
+
+    walk(body, 0, None)
+    measure_ids = [m.get(XML_ID) for m in body.iter(MEI_NS + "measure")]
+    return found, measure_ids
+
+
+def measure_times(alignment_path, mei_path, warnings):
+    """Run tools/mei_measure_times.mjs; None (with a warning) when it cannot."""
+    if not shutil.which("node"):
+        warnings.add("no-node", "node is not on PATH; the payload gets no sections")
+        return None
+    r = subprocess.run(
+        ["node", "--no-warnings", os.path.join(REPO, "tools/mei_measure_times.mjs"),
+         "--alignment", alignment_path, "--mei", mei_path],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        # Verovio's own chatter goes to stderr too; the refusal is its last lines.
+        tail = " | ".join(r.stderr.strip().splitlines()[-4:])
+        warnings.add("sections-failed", f"mei_measure_times.mjs refused: {tail}")
+        return None
+    return json.loads(r.stdout)
+
+
+def build_sections(args, sets, overrides, warnings):
+    hq = sets["hq"]
+    if not (score_set(sets)["body"].get("score") or {}).get("score_onset"):
+        log("  sections: none — the alignment is not score-aligned")
+        return None
+    mei_path = os.path.join(args.data_dir, f"{PIECE}.mei")
+    if not os.path.exists(mei_path):
+        warnings.add("no-sections", f"{mei_path} is not pinned yet; run --steps mei")
+        return None
+    tree, measure_ids = read_section_tree(mei_path)
+    if not tree:
+        log("  sections: none — the MEI has no <section>")
+        return None
+    timed = measure_times(os.path.join(args.src_dir, SOURCES.get("score", SOURCES["hq"])),
+                          mei_path, warnings)
+    if timed is None:
+        return None
+    ref_sec = {m["id"]: m["refSec"] for m in timed["measures"]}
+    missing = [mid for mid in measure_ids if mid not in ref_sec]
+    if missing:
+        warnings.add("sections-measure-untimed",
+                     f"{len(missing)} measure(s) have no timemap entry, e.g. {missing[:3]}")
+        return None
+    position = {mid: i for i, mid in enumerate(measure_ids)}
+    ref_grid = hq["body"]["audio"][hq["header"]["ref"]]["times"]
+    labels = (overrides or {}).get("sectionLabels") or {}
+    # Short shared names (2026-11-17): the SAME name on every section of a
+    # recurring theme, so a reader sees it come back; drawn where it fits.
+    # Editorial and optional — a section without one shows none.
+    shorts = (overrides or {}).get("sectionShort") or {}
+
+    out, unlabelled = [], []
+    for el, depth, parent in tree:
+        sid = el.get(XML_ID)
+        bars = [m for m in el.iter(MEI_NS + "measure")]
+        if not bars:
+            warnings.add("section-empty", f"section {sid} holds no measure")
+            continue
+        first, last = bars[0].get(XML_ID), bars[-1].get(XML_ID)
+        after = position[last] + 1
+        start = ref_sec[first]
+        end = ref_sec[measure_ids[after]] if after < len(measure_ids) else timed["end"]["refSec"]
+        label = lang_map(labels.get(sid)) or lang_map(el.get("label"))
+        if label is None:
+            unlabelled.append(sid)
+        out.append({
+            "id": sid,
+            "parent": parent,
+            "level": depth,
+            "label": label,
+            "short": lang_map(shorts.get(sid)),
+            "bars": [bars[0].get("n"), bars[-1].get("n")],
+            "indexPair": [closest_ix(ref_grid, start), closest_ix(ref_grid, end)],
+        })
+    if unlabelled:
+        warnings.add("section-labels-missing",
+                     f"{len(unlabelled)} of {len(out)} section(s) have no label (overrides "
+                     f"`sectionLabels` or MEI @label); the exhibit falls back to the xml:id",
+                     sections=unlabelled)
+    by_level = Counter(s["level"] for s in out)
+    log(f"  sections: {len(out)} ({', '.join(f'level {k}: {v}' for k, v in sorted(by_level.items()))}); "
+        f"quarters {timed['quarters']['rendered']}/{timed['quarters']['aligned']} match; "
+        f"Verovio {timed['toolkit']}")
+    return {"toolkit": timed["toolkit"], "list": out}
+
+
 def step_payload(args, sets, warnings):
     log("payload:")
     verify_pairs(sets, warnings)
@@ -835,26 +1105,35 @@ def step_payload(args, sets, warnings):
     os.makedirs(args.data_dir, exist_ok=True)
     hq_header = sets["hq"]["header"]
     corrections = summarise_corrections(hq_header.get("corrections"))
+    overrides_path = os.path.join(args.data_dir, OVERRIDES_FILE)
     if AUDIENCES:
-        overrides_path = os.path.join(args.data_dir, OVERRIDES_FILE)
         if NEEDS_HAND_PLACEMENT:
             # The seed documents the D-or-E slot; another piece gets no template
             # until it has a region that needs one.
             seed_overrides(overrides_path)
         overrides = load_overrides(overrides_path, warnings)
         apply_overrides(annotations, overrides, warnings, corrections)
+        apply_reveal(annotations, overrides, warnings)
+        apply_texts(annotations, overrides, warnings, sets)
         pending_hand_placement(annotations, warnings)
     else:
         # Nothing to hand-place without annotations; seeding the D-or-E slot for
-        # a piece that has no "D or E?" would be a lie in a committed file.
+        # a piece that has no "D or E?" would be a lie in a committed file. An
+        # existing file may still carry section labels.
+        overrides = load_overrides(overrides_path, warnings)
         log("  overrides: none — this piece has no annotation sets")
+    sections = build_sections(args, sets, overrides, warnings)
+    mei_path = os.path.join(args.data_dir, f"{PIECE}.mei")
+    mei_sha = sha256_file(mei_path) if os.path.exists(mei_path) else None
+    pin = mei_pin(score_set(sets)["header"])
     log(f"  corrections: {describe_corrections(corrections)}")
     if not ALIGNMENT_IS_HQ:
         warnings.add("alignment-not-hq",
                      f"{SOURCES['hq']} is not an HQ-preset alignment "
                      f"(params {hq_header.get('alignmentParams')}); cursors and aligned "
-                     f"switches may sit seconds off in places. Re-align at hq BEFORE any "
-                     f"annotation is authored against this piece (plan §5.2c).")
+                     f"switches may sit seconds off in places. Re-align at hq (plan §5.2c); "
+                     f"annotations already authored then follow by "
+                     f"exhibit_annots_on_hq.py --reanchor.")
     payload = {
         "schema": SCHEMA,
         "piece": {
@@ -864,7 +1143,9 @@ def step_payload(args, sets, warnings):
             "opus": PIECE_OPUS,  # None is a fact for Die Fledermaus — see PIECE_OPUS
             "ref": hq_header.get("ref"),
             "meiUri": f"./{PIECE}.mei",
-            "meiSource": hq_header.get("meiUri"),
+            "meiSource": pin["uri"],
+            "meiCommit": pin["commit"],
+            "meiSha256": mei_sha,
         },
         "source": {
             "generatedBy": f"tools/prep_exhibit_data.py ({os.path.basename(__file__)})",
@@ -874,10 +1155,12 @@ def step_payload(args, sets, warnings):
             "alignmentParams": hq_header.get("alignmentParams"),
             "corrections": corrections,
             "audienceSets": {a: SOURCES[a] for a in AUDIENCES},
+            "scoreAlignment": os.path.basename(SOURCES["score"]) if "score" in SOURCES else None,
         },
         "recordings": recordings,
         "annotations": annotations,
-        "score": sets["hq"]["body"].get("score") if args.with_score else None,
+        "sections": sections,
+        "score": score_set(sets)["body"].get("score") if args.with_score else None,
         "warnings": list(warnings),
     }
     out = os.path.join(args.data_dir, f"{PIECE}.json")
@@ -889,16 +1172,56 @@ def step_payload(args, sets, warnings):
 
 
 # ---------------------------------------------------------------------------- mei
+def sha256_file(path):
+    import hashlib
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def mei_pin(header):
+    """Which MEI the alignment was made against, as precisely as the header says.
+
+    `meiUri` names a BRANCH (raw …/main/… or …/refs/heads/main/…), and a branch
+    moves: Eulenburg's Fledermaus gained sections, meter signatures, and a tempo
+    reset in November 2026, after the HQ alignment of September was made against
+    6b6f774. A correcting session that re-bases the alignment (0.115.0) records
+    the commit it re-based onto in `header.rebased.ontoMei.commit`; when present,
+    the raw URL is rewritten to that commit, so a re-run fetches the score the
+    alignment matches rather than whatever the branch holds today. `meiSha256`
+    (0.115.0's stamp) is checked when present.
+    """
+    uri = header.get("meiUri")
+    commit = ((header.get("rebased") or {}).get("ontoMei") or {}).get("commit")
+    m = re.match(r"(https://raw\.githubusercontent\.com/[^/]+/[^/]+/)(refs/heads/[^/]+|[^/]+)/(.+)$",
+                 uri or "")
+    if commit and m:
+        uri = f"{m.group(1)}{commit}/{m.group(3)}"
+    return {"uri": uri, "commit": commit if (commit and m) else None,
+            "sha256": header.get("meiSha256")}
+
+
 def step_mei(args, sets, warnings):
     log("mei:")
-    uri = sets["hq"]["header"].get("meiUri")
+    pin = mei_pin(score_set(sets)["header"])
+    uri = pin["uri"]
     out = os.path.join(args.data_dir, f"{PIECE}.mei")
     if not uri:
         warnings.add("no-mei-uri", "the HQ alignment has no header.meiUri")
         return
+    pinned = bool(pin["commit"] or pin["sha256"])
+    if not pinned:
+        warnings.add("mei-unpinned",
+                     f"the alignment names {uri}, a branch, with no commit or meiSha256; "
+                     f"the pinned MEI is trusted on the quarters check alone")
     if os.path.exists(out) and not args.force:
-        log(f"  {out} exists; --force to refetch")
-        return
+        if pin["sha256"] and sha256_file(out) == pin["sha256"]:
+            log(f"  {out} matches the alignment's meiSha256")
+            return
+        if not pinned:
+            log(f"  {out} exists; --force to refetch")
+            return
+        # A pinned alignment refetches every run: 5 MB is cheaper than finding
+        # out at the wall that the local file predates a re-based alignment.
     os.makedirs(args.data_dir, exist_ok=True)
     # The kiosk has no network, so the MEI must be a local file, not a URL.
     import urllib.request
@@ -911,6 +1234,19 @@ def step_mei(args, sets, warnings):
     if b"<mei" not in body[:4000] and b"<music" not in body[:4000]:
         warnings.add("mei-not-mei", f"{uri} returned {len(body)} bytes with no MEI root")
         return
+    if pin["sha256"]:
+        import hashlib
+        got = hashlib.sha256(body).hexdigest()
+        if got != pin["sha256"]:
+            warnings.add("mei-sha-mismatch",
+                         f"{uri} hashes to {got[:12]}…, the alignment stamps "
+                         f"{pin['sha256'][:12]}…; not written")
+            return
+    if os.path.exists(out):
+        with open(out, "rb") as fh:
+            if fh.read() == body:
+                log(f"  {out} already holds {uri}")
+                return
     with open(out, "wb") as fh:
         fh.write(body)
     log(f"  pinned {uri} -> {out} ({len(body) / 1024:.0f} KB)")
@@ -1001,10 +1337,11 @@ def main():
     log(f"reading {args.src_dir}")
     sets = load_sources(args.src_dir)
 
-    if "payload" in args.steps:
-        step_payload(args, sets, warnings)
+    # mei BEFORE payload: the payload's sections are read from the pinned MEI.
     if "mei" in args.steps:
         step_mei(args, sets, warnings)
+    if "payload" in args.steps:
+        step_payload(args, sets, warnings)
     if "audio" in args.steps:
         step_audio(args, sets, warnings)
 

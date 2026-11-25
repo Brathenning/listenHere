@@ -610,8 +610,20 @@ test.describe('47. The attract loop', () => {
     expect((await attract(pageB)).started).toBe(false);
     // A's music ends: the room's gap, then the leader's pass from the top.
     await pageA.evaluate(() => ((window as any)._playing = false));
-    await pageA.evaluate((t) => (window as any)._exhibitTest.transport.seek(t), durations[order[1]] - 0.1);
-    await expect.poll(async () => (await attract(pageA))?.phase).toBe('gap');
+    // The jump to the end fires every switch point still ahead, and the last one
+    // may move the pass to another recording at the same musical moment, short
+    // of THAT recording's end (on the VPO-2022 spine, 2026-11-10: VPO-1951-1954's
+    // end is 516 s into VPO-2022, whose grid runs to 537 s). Real playback would
+    // play on to it; the quiet transport does not advance, so end whatever is
+    // audible until the pass is over.
+    await expect
+      .poll(async () => {
+        if ((await attract(pageA))?.phase === 'gap') return 'gap';
+        const f = await pageA.evaluate(() => (window as any)._exhibitTest.transport.activeFile as string);
+        await pageA.evaluate((t) => (window as any)._exhibitTest.transport.seek(t), durations[f] - 0.1);
+        return (await attract(pageA))?.phase;
+      })
+      .toBe('gap');
     await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 3_000 }).toBe('gap');
     const [leader, follower] = (await attract(pageA)).leader ? [pageA, pageB] : [pageB, pageA];
     await expect.poll(async () => (await attract(leader)).started, { timeout: 8_000 }).toBe(true);
@@ -652,8 +664,8 @@ test.describe('47. The attract loop', () => {
   // 47.17 THE SECOND PIECE (ruling R6; 0.60.0). `?piece=kaiserwalzer` boots the
   // Kaiserwalzer payload (tools/prep_exhibit_data.py --piece kaiserwalzer — a
   // GENERATED, gitignored file like fledermaus.json and concerts.json, so a
-  // tree that runs this spec needs it built or copied): ten recordings, no
-  // annotations, and the band names the piece WITH its opus for the first
+  // tree that runs this spec needs it built or copied): ten recordings, Chanda's
+  // nine annotations (0.122.0), and the band names the piece WITH its opus for the first
   // time. With `attractPieces` the reload in the silence moves to the next piece.
   // 47.18 THE ROOM MACHINE, increment 1 (plan §4.4, planned 2026-09-11): under
   // ?room=shared the mirror is UNIVERSAL. A LIVE table — no loop configured, no
@@ -761,6 +773,26 @@ test.describe('47. The attract loop', () => {
     expect((await taps(page)).length).toBe(before + 1);
     expect(last.file).toBe(other);
     expect(last.time).toBeUndefined();
+  });
+
+  // 47.26 The section ribbon (?ribbon): a viewport left on the other look is
+  // put back in the configured first look by the sweep, like everything else
+  // a visitor changed.
+  test('47.26 the sweep puts each viewport back in the configured first look of the strips', async ({ page }) => {
+    await boot(page, `${IDLE}&ribbon=switch`);
+    await armQuietTransport(page);
+    const lookOf = () =>
+      page.evaluate(() => (window as any)._exhibitTest.viewports.map((vp: any) => vp.el.dataset.look));
+    await page.click('.vp-toolbar .look-btn[data-look="ribbon"] >> nth=0');
+    expect(await lookOf()).toEqual(['ribbon', 'wave']);
+    await page.evaluate(() => (window as any)._exhibitTest.attract.force());
+    await expect.poll(async () => (await attract(page))?.phase).toBe('attract');
+    expect(await lookOf()).toEqual(['wave', 'wave']);
+    expect(
+      await page.locator('.look-btn[data-look="wave"][aria-pressed="true"]').count(),
+    ).toBe(2);
+    // …and forgets the tapped look, so a reload does not bring it back.
+    expect(await page.evaluate(() => sessionStorage.getItem('exhibit.look.0'))).toBeNull();
   });
 
   // 47.21 THE ROOM MACHINE, increment 4 (minimal, agreed 2026-09-11): with the
@@ -1094,7 +1126,7 @@ test.describe('47. The attract loop', () => {
     const piece = await page.evaluate(() => (window as any)._exhibitTest.exhibit.piece);
     expect(piece.id).toBe('kaiserwalzer');
     expect(piece.opus).toBe('op. 437');
-    expect(await page.evaluate(() => (window as any)._exhibitTest.exhibit.annotations.length)).toBe(0);
+    expect(await page.evaluate(() => (window as any)._exhibitTest.exhibit.annotations.length)).toBe(9);
     await expect(page.locator('.mb-piece-title').first()).toHaveText('Kaiser-Walzer, op. 437');
     // A recording the metadata sidecar has never met still gets a strip and a strap button.
     await expect(page.locator('.vp').first().locator('.strip')).toHaveCount(10);

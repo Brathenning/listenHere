@@ -39,6 +39,9 @@ const CATEGORY_LABELS = {
 /** Panel labels for the views, the toolbar switch's own wording (strings.js `view.*`). */
 const VIEW_LABELS = { listen: "Listen", years: "Year by year", conductors: "Conductors" };
 
+/** Panel labels for the pieces (the payloads' own titles). */
+const PIECE_LABELS = { fledermaus: "Die Fledermaus", kaiserwalzer: "Kaiser-Walzer", pizzicato: "Pizzicato-Polka" };
+
 // Every param carries a `hint` — the 1–2-sentence explanation behind its
 // header (user, 2026-08-27). Rendered as a title tooltip for a desktop hover
 // AND as a tap-to-toggle line under the row, because the panel's real home is
@@ -121,6 +124,48 @@ const TABS = [
         display: (v) => (v ? "show" : "hide"),
         hint:
           "Show or hide the −/+ buttons on each viewport's toolbar. The zoom machinery itself (moment-synced scroll, the API) stays wired either way.",
+      },
+      // The section ribbon (roadmap 28): an alternative look of the strips.
+      {
+        key: "ribbon",
+        label: "Section ribbon",
+        options: ["off", "switch", "first"],
+        hint:
+          "The score's sections as blocks instead of the waveform, for pieces whose payload has sections (not Pizzicato). switch is shipped: a waveform/ribbon switch per viewport, waveform first; first starts on the ribbon; off removes it.",
+      },
+      {
+        key: "ribbonTone",
+        label: "Ribbon colouring",
+        options: ["pastel", "ink", "hue"],
+        hint:
+          "pastel: each form section's colour faded toward the paper (strength below). ink: paper tones and ink rules only, so colour means an annotation. hue: full section colours — hard to tell from the annotation washes.",
+      },
+      {
+        key: "ribbonMix",
+        label: "Ribbon pastel (%)",
+        options: [0, 4, 8, 12, 16, 20],
+        hint:
+          "How much of each section's colour the pastel colouring mixes into the paper; the playing strip gets 1.6 times as much. 0 is plain paper with ink rules.",
+      },
+      {
+        key: "ribbonHeight",
+        label: "Ribbon height",
+        options: ["full", "partial"],
+        hint:
+          "full: the blocks fill the strip, under the annotation washes. partial: a 20 px band along the strip's foot (above the washes under hue colouring).",
+      },
+      {
+        key: "ribbonNames",
+        label: "Ribbon theme names",
+        options: ["none", "short", "full"],
+        hint:
+          "Theme names inside the strips; the caption above them always names the form and theme playing now. none: form labels only. short: each recurring theme's short name where it fits (Waltz 1, Cancan), so returns show. full: those, plus, while the music plays, the playing theme's full name in a pill on the audible strip.",
+      },
+      {
+        key: "ribbonGhost",
+        label: "Ribbon ghost waveform",
+        options: [0, 0.15, 0.2, 0.25, 0.3],
+        hint: "How much of the waveform shows under the switch's middle option, sections over a faint waveform. 0 drops that option; plain sections always hide the waveform, since the ribbon is meant as the less daunting look.",
       },
       // The generic side slot (feedback item 5): options name TENANTS, and the
       // score view will add itself here when it lands (main.js SIDE_TENANTS).
@@ -402,8 +447,17 @@ const TABS = [
   {
     id: "misc",
     label: "Misc",
-    hint: "Focus and reading behaviour, tap semantics, the marker, and kiosk readiness.",
+    hint: "The piece, focus and reading behaviour, tap semantics, the marker, and kiosk readiness.",
     params: [
+      // The prepped payloads in data/ (tools/prep_exhibit_data.py --piece); a new
+      // piece is one more option here.
+      {
+        key: "piece",
+        label: "Piece",
+        options: ["fledermaus", "kaiserwalzer", "pizzicato"],
+        display: (v) => PIECE_LABELS[v] || String(v),
+        hint: "Which piece the table loads: its recordings, annotations, and score. The attract loop's cycle between pieces is ?attractPieces= in the URL, not a row here.",
+      },
       // The tour (roadmap 27; museum feedback 2026-09-22: the interface is
       // still confusing for anyone who has not lived in it).
       {
@@ -428,6 +482,14 @@ const TABS = [
         options: ["on", "off"],
         hint:
           "The annotator's note about the RECORDING you are hearing, below the shared description, plus a dot on every strip the shown annotation has a note for. 31 of the 61 targets in the shown set carry one and none were rendered before 2026-09-01. Off is the comparator, not a fallback.",
+      },
+      // Museum feedback (2026-10-20): quiz answers behind a peel-off card.
+      {
+        key: "reveal",
+        label: "Answers behind a card",
+        options: ["off", "peel"],
+        hint:
+          "For annotations that ask a question (an editorial list in the piece's overrides file), the per-recording note — the answer — lies under a “Show answer” card until the reader taps it or peels it back by dragging. Peeled cards stay off for that recording until the attract loop tidies the table.",
       },
       // Feedback item 4: the audience switch's union position.
       {
@@ -595,9 +657,9 @@ const STUDY_PRESET = {
   // explorers — and the AI-disclosure sentence at their foot — through the
   // tappable facts, wearing the shimmer cue. Needs the mirrored band above.
   bandTap: "shimmer",
-  // The parchment ground (user, 2026-09-03): the staff table reads like the
-  // hand-written concert diaries the palette was drawn from.
-  theme: "parchment",
+  // The salon ground (user, 2026-11-17), succeeding parchment (2026-09-03):
+  // the room's cobalt, brass, and honey wood, after the museum's feedback.
+  theme: "salon",
   // The attract loop (user, 2026-09-07; one per-screen timer since 2026-09-16):
   // a screen untouched for 3 min; the shipped default stays 0 until release.
   attractAfterIdleMs: 180000,
